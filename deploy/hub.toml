@@ -1,0 +1,45 @@
+# meshcore-hubd configuration for be.mesh73.net.
+# This file is the source of truth: edit it here and run deploy/deploy.sh.
+# deploy.sh installs it as /etc/meshcore-hub/hub.toml. If only this file
+# changed, the hub reloads (SIGHUP): the allowlist applies without dropping
+# sessions. Other settings here need a restart: RESTART=1 deploy/deploy.sh
+
+listen = "0.0.0.0:4405"
+hub_key = "/etc/meshcore-hub/hub.key"
+database = "/var/lib/meshcore-hub/hub.db"
+events_socket = "/run/meshcore-hub/events.sock"
+
+# Intervals handed to repeaters in WELCOME (docs/backbone.md, "Timers").
+[timing]
+keepalive_s = 25
+status_s = 60
+neighbours_s = 300
+
+[bridge]
+hold_ms = 1000          # wait for other islands' reports before fanning out
+rate_per_min = 25       # FRAMEs per repeater per minute (repeaters cap at 30)
+own_replies = false     # don't carry pong/help/time/probe/#mbox replies across islands
+dedup_s = 600
+path_memory_h = 24
+
+[retention]
+frames_days = 14
+messages_days = 180
+history_days = 90
+
+# The allowlist. pub = the `pub=` line of the repeater's repeater.key.
+# roles: "observe" (feeds the map) and/or "bridge" (carries traffic between islands).
+
+[[repeater]]
+callsign = "ON0RFG"
+pub = "9ebd58ba0191164815aecbcf39537b8108c0b4a737e82357311b2bb3282cb940"
+roles = ["observe", "bridge"]
+
+# Public channels the portal decodes and shows. Only keys that are genuinely
+# published belong here.
+[[channel]]
+name = "Public"
+psk = "izOH6cXN6mrJ5e26oRXNcg=="
+
+[[channel]]
+hashtag = "mesh"

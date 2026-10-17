@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MeshCore Backbone</title>
+<meta name="description" content="Live map and monitor of the ham MeshCore network in Belgium and its IP fallback backbone.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" crossorigin="anonymous" referrerpolicy="no-referrer">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="4"/><circle cx="6" cy="9" r="2.5"/><circle cx="26" cy="9" r="2.5"/><circle cx="9" cy="26" r="2.5"/><circle cx="24" cy="25" r="2.5"/><path d="M16 16 6 9M16 16l10-7M16 16l-7 10M16 16l8 9"/></svg>
+    <div>
+      <h1>MeshCore Backbone</h1>
+      <p class="sub">Ham MeshCore 434.890 MHz · Belgium · IP fallback</p>
+    </div>
+  </div>
+  <div class="stats" id="stats">
+    <div class="stat"><b id="st-rep">–</b><span>repeaters online</span></div>
+    <div class="stat"><b id="st-nodes">–</b><span>nodes, 24 h</span></div>
+    <div class="stat"><b id="st-msgs">–</b><span>public messages, 24 h</span></div>
+    <div class="stat"><b id="st-bridged">–</b><span>bridged, 24 h</span></div>
+  </div>
+  <div class="live" id="live" title="Live updates"><i></i><span>connecting</span></div>
+</header>
+
+<main class="layout">
+  <section class="mapwrap">
+    <div id="map" aria-label="Map of repeaters, nodes and RF links"></div>
+    <div class="legend">
+      <span><i class="dot bb on"></i>backbone, online</span>
+      <span><i class="dot bb"></i>backbone, offline</span>
+      <span><i class="dot t2"></i>repeater</span>
+      <span><i class="dot t1"></i>companion</span>
+      <span><i class="dot t3"></i>room</span>
+      <span><i class="dot t4"></i>sensor</span>
+      <span><i class="line"></i>heard directly (SNR)</span>
+    </div>
+  </section>
+
+  <aside class="side">
+    <nav class="tabs" role="tablist">
+      <button role="tab" data-tab="repeaters" aria-selected="true">Repeaters</button>
+      <button role="tab" data-tab="feed">Live</button>
+      <button role="tab" data-tab="messages">Messages</button>
+      <button role="tab" data-tab="join">Join</button>
+    </nav>
+
+    <div class="panel" id="tab-repeaters">
+      <div id="repeaters" class="cards"></div>
+      <div id="detail" class="detail" hidden></div>
+    </div>
+
+    <div class="panel" id="tab-feed" hidden>
+      <div class="spark-row">
+        <div><h3>Heard per hour</h3><svg id="spark-heard" class="spark" viewBox="0 0 240 40" preserveAspectRatio="none"></svg></div>
+        <div><h3>Bridged per hour</h3><svg id="spark-bridged" class="spark" viewBox="0 0 240 40" preserveAspectRatio="none"></svg></div>
+      </div>
+      <h3>Live traffic</h3>
+      <ol id="feed" class="feed"></ol>
+    </div>
+
+    <div class="panel" id="tab-messages" hidden>
+      <p class="note">Public channels only. Private messages are never decoded or stored.</p>
+      <ol id="messages" class="msgs"></ol>
+    </div>
+
+    <div class="panel" id="tab-join" hidden>
+      <h3>Connect a repeater to the backbone</h3>
+      <p>The backbone joins RF islands over the internet and feeds this map. A repeater opens a UDP session to the hub, so it works behind NAT and on 4G. When the hub is unreachable the repeater carries on exactly as before.</p>
+      <ol class="steps">
+        <li>Run <a href="https://github.com/Guru-RF/meshcore-repeater">meshcore-repeater</a> with the backbone support.</li>
+        <li>Send the hub operator your callsign and your repeater's public key: the <code>pub=</code> line of <code>repeater.key</code>.</li>
+        <li>Once it is on the allowlist, add this to <code>meshcore-repeater.conf</code> and restart:</li>
+      </ol>
+      <pre id="join-conf" class="conf"></pre>
+      <button class="copy" id="join-copy" type="button">Copy</button>
+      <p class="note">The hub key is pinned: the repeater only trusts a hub that signs with it.</p>
+    </div>
+  </aside>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+<script src="/app.js"></script>
+</body>
+</html>

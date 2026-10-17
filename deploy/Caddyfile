@@ -1,0 +1,13 @@
+# Installed as /etc/caddy/Caddyfile by deploy/install.sh.
+# Caddy fetches and renews the Let's Encrypt certificate itself.
+
+be.mesh73.net {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), camera=(), microphone=()"
+		-Server
+	}
+}

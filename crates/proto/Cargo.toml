@@ -1,0 +1,16 @@
+[package]
+name = "meshcore-proto"
+description = "MeshCore frame decoding and the meshcore-repeater IP backbone wire format (v1)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+aes.workspace = true
+base64.workspace = true
+ed25519-dalek.workspace = true
+hex.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+x25519-dalek.workspace = true

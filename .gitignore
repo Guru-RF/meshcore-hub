@@ -1,0 +1,13 @@
+# build output
+/target
+/dist
+
+# runtime identity (private key!) and local data
+*.key
+*.db
+*.db-shm
+*.db-wal
+
+# editor / OS
+.DS_Store
+*.swp

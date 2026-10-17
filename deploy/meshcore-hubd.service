@@ -1,0 +1,43 @@
+[Unit]
+Description=MeshCore backbone hub (UDP 4405)
+Documentation=https://github.com/Guru-RF/meshcore-hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=meshcore-hub
+Group=meshcore-hub
+ExecStart=/usr/local/bin/meshcore-hubd -c /etc/meshcore-hub/hub.toml
+ExecReload=/bin/kill -HUP $MAINPID
+# The private key stays root-only on disk; systemd hands the service a copy.
+LoadCredential=hub.key:/etc/meshcore-hub/hub.key
+StateDirectory=meshcore-hub
+StateDirectoryMode=0770
+RuntimeDirectory=meshcore-hub
+RuntimeDirectoryMode=0750
+# Database and socket are group-shared with the portal.
+UMask=0007
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

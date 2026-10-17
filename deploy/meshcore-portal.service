@@ -1,0 +1,38 @@
+[Unit]
+Description=MeshCore backbone portal (HTTP 127.0.0.1:8080, behind Caddy)
+Documentation=https://github.com/Guru-RF/meshcore-hub
+After=meshcore-hubd.service
+Wants=meshcore-hubd.service
+
+[Service]
+User=meshcore-portal
+Group=meshcore-portal
+# Read the hub's database and event socket; never its key.
+SupplementaryGroups=meshcore-hub
+ExecStart=/usr/local/bin/meshcore-portal --listen 127.0.0.1:8080 --db /var/lib/meshcore-hub/hub.db --events /run/meshcore-hub/events.sock
+Restart=always
+RestartSec=2
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+# SQLite readers of a WAL database update its shared-memory index.
+ReadWritePaths=/var/lib/meshcore-hub
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target
