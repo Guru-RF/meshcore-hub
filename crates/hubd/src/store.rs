@@ -178,11 +178,20 @@ fn migrate(db: &Connection) -> Result<()> {
     if add_column(db, "nodes", "moved_ts", "INTEGER")? {
         // When a node last moved is unknown for what is already stored: date
         // positions from the latest advert, so a link heard before it is not
-        // drawn to a place the node may since have left.
+        // drawn to a place the node may since have left. Not for backbone
+        // nodes: they stay put, and dating them would hide every link they
+        // heard before their own latest advert.
         db.execute(
-            "UPDATE nodes SET moved_ts = advert_ts WHERE lat IS NOT NULL AND advert_ts > 0 AND advert_ts <= unixepoch()",
+            "UPDATE nodes SET moved_ts = advert_ts WHERE lat IS NOT NULL AND advert_ts > 0 AND advert_ts <= unixepoch()
+                 AND pub NOT IN (SELECT pub FROM repeaters)",
             [],
         )?;
+    }
+    // 1: undo that dating for backbone nodes where an earlier build did it.
+    let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    if version < 1 {
+        db.execute("UPDATE nodes SET moved_ts = NULL WHERE pub IN (SELECT pub FROM repeaters)", [])?;
+        db.pragma_update(None, "user_version", 1)?;
     }
     Ok(())
 }
@@ -500,6 +509,7 @@ mod tests {
                  INSERT INTO repeaters (pub, callsign) VALUES ('01', 'ON0RFG');
                  CREATE TABLE nodes (pub TEXT PRIMARY KEY, name TEXT, type INTEGER NOT NULL DEFAULT 0, lat REAL, lon REAL,
                      advert_ts INTEGER NOT NULL DEFAULT 0, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, adverts INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO nodes (pub, name, lat, lon, advert_ts, first_seen, last_seen) VALUES ('01', 'ON0RFG', 50.9475, 4.2414, 1792000100, 1, 2);
                  INSERT INTO nodes (pub, name, lat, lon, advert_ts, first_seen, last_seen) VALUES ('02', 'OR7F-12', 51.1458, 2.7917, 1792000000, 1, 2);
                  INSERT INTO nodes (pub, name, advert_ts, first_seen, last_seen) VALUES ('03', 'no position', 0, 1, 2);").unwrap();
         }
@@ -508,11 +518,24 @@ mod tests {
         assert_eq!(kind, "repeater");
         let moved: Vec<Option<i64>> =
             db.prepare("SELECT moved_ts FROM nodes ORDER BY pub").unwrap().query_map([], |x| x.get(0)).unwrap().map(Result::unwrap).collect();
-        assert_eq!(moved, [Some(1792000000), None], "positions dated from the latest advert");
+        assert_eq!(moved, [None, Some(1792000000), None], "positions dated from the latest advert, except backbone nodes'");
+        let version: i64 = db.query_row("PRAGMA user_version", [], |x| x.get(0)).unwrap();
+        assert_eq!(version, 1);
         apply_batch(&mut db, &[Op::Allowlist(vec![([1; 32], "OR7F-4".into(), 3, Kind::Hotspot)])]).unwrap();
         let kind: String = db.query_row("SELECT kind FROM repeaters WHERE callsign = 'OR7F-4'", [], |x| x.get(0)).unwrap();
         assert_eq!(kind, "hotspot");
         open(&path).unwrap(); // a second open leaves it alone
+        drop(db);
+
+        // A database the first build already dated, backbone nodes included.
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("UPDATE nodes SET moved_ts = advert_ts WHERE lat IS NOT NULL; PRAGMA user_version = 0;").unwrap();
+        }
+        let db = open(&path).unwrap();
+        let moved: Vec<Option<i64>> =
+            db.prepare("SELECT moved_ts FROM nodes ORDER BY pub").unwrap().query_map([], |x| x.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(moved, [None, Some(1792000000), None], "backbone nodes undated again");
         drop(db);
         let _ = std::fs::remove_dir_all(&dir);
     }
