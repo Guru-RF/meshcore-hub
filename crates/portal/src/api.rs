@@ -33,6 +33,10 @@ pub fn routes() -> Router<Shared> {
 
 const DAY: i64 = 86_400;
 
+/// The only channel whose messages the public pages show. Room admins see
+/// every decoded channel (`/api/admin/messages`).
+pub(crate) const PUBLIC_CHANNEL: &str = "Public";
+
 fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -117,7 +121,7 @@ async fn overview(State(st): State<Shared>) -> Response {
             "hub": meta,
             "repeaters": {"total": total, "online": online},
             "nodes_24h": count(db, "SELECT COUNT(*) FROM nodes WHERE last_seen >= ?1", [t - DAY])?,
-            "messages_24h": count(db, "SELECT COUNT(*) FROM messages WHERE first_heard >= ?1", [t - DAY])?,
+            "messages_24h": count(db, "SELECT COUNT(*) FROM messages WHERE first_heard >= ?1 AND channel = ?2", params![t - DAY, PUBLIC_CHANNEL])?,
             "frames_24h": count(db, "SELECT COUNT(*) FROM frames WHERE ts >= ?1 AND backbone = 0", [t - DAY])?,
             "bridged_24h": count(db, "SELECT COUNT(*) FROM bridged WHERE ts >= ?1", [t - DAY])?,
         }))
@@ -295,40 +299,48 @@ struct MsgQuery {
 async fn messages(State(st): State<Shared>, Query(q): Query<MsgQuery>) -> Response {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
     let before = q.before.unwrap_or(i64::MAX);
-    query(st, move |db| {
-        let mut list = rows(
+    query(st, move |db| Ok(json!(message_list(db, before, limit, Some(PUBLIC_CHANNEL), true)?))).await
+}
+
+/// Messages newest first, each with the repeaters that heard it. `channel`
+/// narrows it to one channel. `hide_blocked` leaves out senders blocked by
+/// name (the hub stops keeping their messages once blocked; this hides what
+/// came before). Every message carries `blocked`.
+pub(crate) fn message_list(db: &Connection, before: i64, limit: u32, channel: Option<&str>, hide_blocked: bool) -> rusqlite::Result<Vec<Value>> {
+    let mut list = rows(
+        db,
+        "SELECT hash, channel, sender, text, sent_ts, first_heard,
+                EXISTS (SELECT 1 FROM blocks b WHERE b.kind = 'name' AND b.value = m.sender
+                        AND (b.expires_ts IS NULL OR b.expires_ts > ?4)) AS blocked
+         FROM messages m
+         WHERE first_heard < ?1 AND (?3 IS NULL OR m.channel = ?3)
+         ORDER BY first_heard DESC LIMIT ?2",
+        params![before, limit, channel, now()],
+    )?;
+    if hide_blocked {
+        list.retain(|m| m["blocked"].as_i64() == Some(0));
+    }
+    let mut heard: HashMap<String, Vec<Value>> = HashMap::new();
+    if let (Some(first), Some(last)) = (list.last(), list.first()) {
+        let lo = first["first_heard"].as_i64().unwrap_or(0);
+        let hi = last["first_heard"].as_i64().unwrap_or(0);
+        for r in rows(
             db,
-            // Blocked senders' messages are not shown (the hub stops keeping
-            // them once blocked; this hides what came before).
-            "SELECT hash, channel, sender, text, sent_ts, first_heard FROM messages m
-             WHERE first_heard < ?1 AND NOT EXISTS (
-                 SELECT 1 FROM blocks b WHERE b.kind = 'name' AND b.value = m.sender AND (b.expires_ts IS NULL OR b.expires_ts > ?3))
-             ORDER BY first_heard DESC LIMIT ?2",
-            params![before, limit, now()],
-        )?;
-        let mut heard: HashMap<String, Vec<Value>> = HashMap::new();
-        if let (Some(first), Some(last)) = (list.last(), list.first()) {
-            let lo = first["first_heard"].as_i64().unwrap_or(0);
-            let hi = last["first_heard"].as_i64().unwrap_or(0);
-            for r in rows(
-                db,
-                "SELECT r.hash, p.callsign AS rep, r.rssi, r.snr, r.hops FROM receptions r
-                 JOIN messages m ON m.hash = r.hash
-                 LEFT JOIN repeaters p ON p.pub = r.repeater
-                 WHERE m.first_heard BETWEEN ?1 AND ?2",
-                params![lo, hi],
-            )? {
-                let h = r["hash"].as_str().unwrap_or_default().to_string();
-                heard.entry(h).or_default().push(r);
-            }
+            "SELECT r.hash, p.callsign AS rep, r.rssi, r.snr, r.hops FROM receptions r
+             JOIN messages m ON m.hash = r.hash
+             LEFT JOIN repeaters p ON p.pub = r.repeater
+             WHERE m.first_heard BETWEEN ?1 AND ?2",
+            params![lo, hi],
+        )? {
+            let h = r["hash"].as_str().unwrap_or_default().to_string();
+            heard.entry(h).or_default().push(r);
         }
-        for m in &mut list {
-            let h = m["hash"].as_str().unwrap_or_default().to_string();
-            m["heard"] = json!(heard.remove(&h).unwrap_or_default());
-        }
-        Ok(json!(list))
-    })
-    .await
+    }
+    for m in &mut list {
+        let h = m["hash"].as_str().unwrap_or_default().to_string();
+        m["heard"] = json!(heard.remove(&h).unwrap_or_default());
+    }
+    Ok(list)
 }
 
 async fn activity(State(st): State<Shared>) -> Response {
@@ -359,7 +371,7 @@ async fn activity(State(st): State<Shared>) -> Response {
             "heard": bucket("SELECT ts / 3600, COUNT(*) FROM frames WHERE ts >= ?1 AND backbone = 0 GROUP BY 1")?,
             "forwarded": bucket("SELECT ts / 3600, COUNT(*) FROM frames WHERE ts >= ?1 AND backbone = 0 AND disposition = 0 GROUP BY 1")?,
             "bridged": bucket("SELECT ts / 3600, COUNT(*) FROM bridged WHERE ts >= ?1 GROUP BY 1")?,
-            "messages": bucket("SELECT first_heard / 3600, COUNT(*) FROM messages WHERE first_heard >= ?1 GROUP BY 1")?,
+            "messages": bucket("SELECT first_heard / 3600, COUNT(*) FROM messages WHERE first_heard >= ?1 AND channel = 'Public' GROUP BY 1")?,
             "recent_bridged": rows(
                 db,
                 "SELECT b.ts, b.hash, s.callsign AS src, d.callsign AS dst, b.route, b.ptype FROM bridged b

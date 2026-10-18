@@ -283,6 +283,10 @@ button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .flash { margin: 0; padding: 9px 12px; border-radius: 8px; background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .flash.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); }
 .invite-link { margin-top: 10px; }
+#admin-msgs { max-height: 520px; overflow-y: auto; margin: 8px 0; }
+#admin-msgs li.off .text { color: var(--muted); }
+#admin-msgs li.empty { color: var(--muted); }
+#admin-msgs .head .link { font-size: 11.5px; }
 .invite-link pre { white-space: pre-wrap; word-break: break-all; }
 #audit li { grid-template-columns: 150px minmax(0, 190px) 1fr; }
 

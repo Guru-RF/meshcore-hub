@@ -194,7 +194,50 @@ async function load() {
   $("#who").hidden = false;
   render();
   show("dash");
+  loadChannels();
+  loadMessages(true);
 }
+
+// ------------------------------------------------------------- messages --
+
+const clock = (ts) => new Date(ts * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+let msgs = [];
+
+async function loadChannels() {
+  try {
+    const list = await call("GET", "/api/channels");
+    const sel = $("#msg-channel");
+    const cur = sel.value;
+    sel.innerHTML = `<option value="">All channels</option>` + list.map((c) => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join("");
+    sel.value = cur;
+  } catch {}
+}
+
+async function loadMessages(reset) {
+  const ch = $("#msg-channel").value;
+  const before = !reset && msgs.length ? `&before=${msgs[msgs.length - 1].first_heard}` : "";
+  let list;
+  try {
+    list = await call("GET", `/api/admin/messages?limit=100&channel=${encodeURIComponent(ch)}${before}`);
+  } catch (e) {
+    if (e.status === 401) { show("signin"); return; }
+    flash(e.message, true);
+    return;
+  }
+  msgs = reset ? list : msgs.concat(list);
+  $("#msg-older").hidden = list.length < 100;
+  $("#admin-msgs").innerHTML = msgs.map((m) => `<li class="${m.blocked ? "off" : ""}">
+      <div class="head"><span class="from">${esc(m.sender || "?")}</span><span class="chan">${esc(m.channel)}</span>
+        ${m.blocked ? `<span class="badge off">blocked</span>` : m.sender ? `<button type="button" class="link" data-sender="${esc(m.sender)}">Block…</button>` : ""}
+        <span class="time">${esc(clock(m.first_heard))}</span></div>
+      <div class="text">${esc(m.text)}</div>
+      <div class="via">${(m.heard || []).map((h) => `<span>${esc(h.rep || "?")} ${h.rssi ?? "–"} dBm · ${h.snr ?? "–"} dB${h.hops ? ` · ${h.hops} hop${h.hops > 1 ? "s" : ""}` : ""}</span>`).join("")}</div>
+    </li>`).join("") || `<li class="empty">No messages${ch ? ` on ${esc(ch)}` : ""} yet.</li>`;
+}
+
+$("#msg-channel").onchange = () => loadMessages(true);
+$("#msg-refresh").onclick = () => loadMessages(true);
+$("#msg-older").onclick = () => loadMessages(false);
 
 function empty(text) {
   return `<li class="empty">${esc(text)}</li>`;

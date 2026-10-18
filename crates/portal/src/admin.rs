@@ -157,6 +157,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/admin/login/finish", post(login_finish))
         .route("/api/admin/logout", post(logout))
         .route("/api/admin/state", get(state))
+        .route("/api/admin/messages", get(messages))
         .route("/api/admin/rooms", post(room_add))
         .route("/api/admin/rooms/{name}", delete(room_remove))
         .route("/api/admin/blocks", post(block_add))
@@ -538,6 +539,23 @@ async fn state(State(st): State<Shared>, h: HeaderMap) -> ApiResult {
         "audit": rows(&adb, "SELECT ts, admin, action, detail FROM audit ORDER BY id DESC LIMIT 100", [])?,
         "limits": {"rooms": MAX_ROOMS, "blocks": MAX_BLOCKS},
     })))
+}
+
+#[derive(Deserialize)]
+struct MsgQuery {
+    limit: Option<u32>,
+    before: Option<i64>,
+    channel: Option<String>,
+}
+
+/// Every decoded channel's messages, blocked senders included (marked).
+async fn messages(State(st): State<Shared>, h: HeaderMap, axum::extract::Query(q): axum::extract::Query<MsgQuery>) -> ApiResult {
+    me(&st, &h)?;
+    let hdb = hub_db(&st)?;
+    let limit = q.limit.unwrap_or(100).clamp(1, 500);
+    let channel = q.channel.filter(|c| !c.is_empty());
+    let list = crate::api::message_list(&hdb, q.before.unwrap_or(i64::MAX), limit, channel.as_deref(), false)?;
+    Ok(ok(json!(list)))
 }
 
 // --------------------------------------------------------- rooms, blocks --

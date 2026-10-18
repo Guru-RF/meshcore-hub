@@ -50,6 +50,17 @@
     </section>
 
     <section class="box">
+      <h2>Messages</h2>
+      <p class="note">Every decoded channel. The public map shows only the default Public channel.</p>
+      <div class="row-form">
+        <label><span>Channel</span><select id="msg-channel"><option value="">All channels</option></select></label>
+        <button type="button" class="primary" id="msg-refresh">Refresh</button>
+      </div>
+      <ol class="msgs" id="admin-msgs"></ol>
+      <button type="button" class="link" id="msg-older" hidden>Older messages</button>
+    </section>
+
+    <section class="box">
       <h2>Blocked users</h2>
       <p class="note">Blocks apply at the hub and on every node on the backbone; repeaters that are only on RF still relay a blocked user. A group message carries only the name its sender chose, so a name block is easy to dodge; a key block stops one identity's adverts.</p>
       <ul class="list" id="blocks"></ul>

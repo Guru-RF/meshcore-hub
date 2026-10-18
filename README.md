@@ -106,7 +106,8 @@ POLICY in `docs/backbone.md`.
   the repeater did with them.
 - **Message text** is decoded only for channels whose keys are published:
   the ones in `hub.toml` and the admins' rooms. Private messages are never
-  decoded.
+  decoded. The public map shows only the default Public channel's messages
+  (page, API and live feed); room admins see every decoded channel.
 - **Positions** come only from signed adverts the nodes broadcast themselves.
 - **Retention:** frame metadata and bridging decisions are kept 14 days,
   messages 180 days, history 90 days (`[retention]` in `hub.toml`).

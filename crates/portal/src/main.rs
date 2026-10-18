@@ -147,6 +147,9 @@ async fn relay_events(path: PathBuf, live: broadcast::Sender<Arc<str>>) {
                 warned = false;
                 let mut lines = tokio::io::BufReader::new(s).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
+                    if !public_event(&line) {
+                        continue;
+                    }
                     let _ = live.send(Arc::from(line));
                 }
                 warn!("hub events closed, reconnecting");
@@ -159,6 +162,14 @@ async fn relay_events(path: PathBuf, live: broadcast::Sender<Arc<str>>) {
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
+}
+
+/// The live feed is public: message text only from the Public channel.
+fn public_event(line: &str) -> bool {
+    if !line.contains(r#""t":"msg""#) {
+        return true;
+    }
+    serde_json::from_str::<serde_json::Value>(line).is_ok_and(|v| v["channel"] == api::PUBLIC_CHANNEL)
 }
 
 async fn ws(State(st): State<Shared>, up: WebSocketUpgrade) -> Response {
@@ -230,4 +241,17 @@ async fn asset(name: &'static str) -> Response {
         ),
     );
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_event;
+
+    #[test]
+    fn live_feed_carries_public_channel_text_only() {
+        assert!(public_event(r#"{"channel":"Public","t":"msg","text":"hi"}"#));
+        assert!(!public_event(r##"{"channel":"#pra","t":"msg","text":"hi"}"##));
+        assert!(!public_event(r#"{"t":"msg"}"#));
+        assert!(public_event(r#"{"t":"frame","type":"GRP_TXT"}"#));
+    }
 }
