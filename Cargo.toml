@@ -28,6 +28,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 axum = { version = "0.8", features = ["ws"] }
+webauthn-rs = { version = "=0.5.5", features = ["conditional-ui"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 [profile.release]
 lto = "thin"

@@ -128,15 +128,61 @@ fn run(config: &Path) -> Result<()> {
     ];
     meta.extend(cfg.map_meta());
     store_tx.send(Op::Meta(meta))?;
+    let mut policy = PolicySync::open(&cfg.database)?;
+    policy.sync(&mut hub, &store_tx, None, false);
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
-    let result = rt.block_on(serve(&cfg, config, &mut hub, &store_tx));
+    let result = rt.block_on(serve(&cfg, config, &mut hub, &store_tx, &mut policy));
     drop(store_tx);
     let _ = store_thread.join();
     result
 }
 
-async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sender<Op>) -> Result<()> {
+/// Keeps the hub's rooms and blocks in step with the tables the portal's
+/// admins write. Each new set gets a new version, the Unix time or one more
+/// than the last. Version and content hash are kept in meta, so a restart
+/// with the same set reuses the version and the nodes don't fetch it again.
+struct PolicySync {
+    db: rusqlite::Connection,
+    version: u32,
+    hash: String,
+}
+
+impl PolicySync {
+    fn open(path: &Path) -> Result<Self> {
+        let db = store::open_reader(path)?;
+        let version = store::meta(&db, "policy_version")?.and_then(|v| v.parse().ok()).unwrap_or(0);
+        let hash = store::meta(&db, "policy_hash")?.unwrap_or_default();
+        Ok(PolicySync { db, version, hash })
+    }
+
+    /// Apply the set when it changed. `force` (the allowlist changed, and with
+    /// it which blocks are left out) applies it under a new version anyway.
+    fn sync(&mut self, hub: &mut Hub, store_tx: &Sender<Op>, now: Option<Now>, force: bool) {
+        let unix = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
+        let entries = match store::load_policy(&self.db, unix) {
+            Ok(e) => e,
+            Err(e) => {
+                warn!("reading rooms and blocks: {e:#}");
+                return;
+            }
+        };
+        let bytes: Vec<u8> = entries.iter().flat_map(|e| e.encode()).collect();
+        let hash = hex::encode(meshcore_proto::wire::sha256(&[&bytes]));
+        let changed = hash != self.hash || self.version == 0 || force;
+        if !changed && hub.policy_version() == self.version {
+            return;
+        }
+        if changed {
+            self.version = unix.max(self.version.wrapping_add(1)).max(1);
+            self.hash = hash;
+            let _ = store_tx.send(Op::Meta(vec![("policy_version".into(), self.version.to_string()), ("policy_hash".into(), self.hash.clone())]));
+        }
+        hub.set_policy(now, self.version, entries);
+    }
+}
+
+async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sender<Op>, policy: &mut PolicySync) -> Result<()> {
     let sock = UdpSocket::bind(&cfg.listen).await.with_context(|| format!("binding UDP {}", cfg.listen))?;
     info!("backbone listening on udp {}", sock.local_addr()?);
 
@@ -148,6 +194,8 @@ async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sende
     let clock = Clock { start: Instant::now() };
     let mut tick = tokio::time::interval(Duration::from_millis(100));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut policy_tick = tokio::time::interval(Duration::from_secs(2));
+    policy_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut hup = signal(SignalKind::hangup())?;
     let mut term = signal(SignalKind::terminate())?;
     let mut int = signal(SignalKind::interrupt())?;
@@ -160,6 +208,7 @@ async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sende
                 Err(e) => warn!("udp recv: {e}"),
             },
             _ = tick.tick() => hub.tick(clock.now()),
+            _ = policy_tick.tick() => policy.sync(hub, store_tx, Some(clock.now()), false),
             _ = hup.recv() => match Config::load(config_path).and_then(|c| Ok((c.allowlist()?, c.decode_channels()?, c.map_meta()))) {
                 Ok((allow, channels, meta)) => {
                     info!(
@@ -170,6 +219,7 @@ async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sende
                     hub.set_allowlist(Some(clock.now()), allow);
                     hub.set_channels(channels);
                     let _ = store_tx.send(Op::Meta(meta));
+                    policy.sync(hub, store_tx, Some(clock.now()), true);
                 }
                 Err(e) => error!("SIGHUP: keeping the old allowlist: {e:#}"),
             },

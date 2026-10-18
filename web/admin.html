@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Backbone Admin</title>
+<meta name="robots" content="noindex">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body class="adminpage">
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="4"/><circle cx="6" cy="9" r="2.5"/><circle cx="26" cy="9" r="2.5"/><circle cx="9" cy="26" r="2.5"/><circle cx="24" cy="25" r="2.5"/><path d="M16 16 6 9M16 16l10-7M16 16l-7 10M16 16l8 9"/></svg>
+    <div>
+      <h1>Backbone Admin</h1>
+      <p class="sub">Rooms and blocked users for every node on the backbone</p>
+    </div>
+  </div>
+  <div class="who" id="who" hidden><span id="who-email"></span><button type="button" class="link" id="signout">Sign out</button></div>
+  <a class="maplink" href="/">← Map</a>
+</header>
+
+<main class="admin">
+  <p class="flash" id="flash" role="status" hidden></p>
+
+  <section class="box" id="invite" hidden>
+    <h2>Create your passkey</h2>
+    <p id="invite-text"></p>
+    <p class="note">A passkey replaces a password: it lives on this device (or your phone or password manager) and is unlocked with your fingerprint, face or PIN. You can add more devices later with a new invite.</p>
+    <button type="button" class="primary" id="invite-go">Create passkey</button>
+  </section>
+
+  <section class="box" id="signin" hidden>
+    <h2>Sign in</h2>
+    <p>Room admins sign in with the passkey they created from their invite.</p>
+    <button type="button" class="primary" id="signin-go">Sign in with a passkey</button>
+    <p class="note">No account? Admins are invite only: ask an existing admin.</p>
+  </section>
+
+  <div id="dash" hidden>
+    <section class="box">
+      <h2>Rooms</h2>
+      <p class="note">A room is a hashtag channel plus the transport region with the same key. Every backbone node serves the rooms here on top of its own, and the portal shows their messages.</p>
+      <ul class="list" id="rooms"></ul>
+      <form class="row-form" id="room-form">
+        <label class="grow"><span>Room name</span><input id="room-name" placeholder="#name" autocomplete="off" required pattern="#?[A-Za-z0-9]+(-[A-Za-z0-9]+)*" maxlength="31"></label>
+        <button type="submit" class="primary">Add room</button>
+      </form>
+    </section>
+
+    <section class="box">
+      <h2>Blocked users</h2>
+      <p class="note">Blocks apply at the hub and on every node on the backbone; repeaters that are only on RF still relay a blocked user. A group message carries only the name its sender chose, so a name block is easy to dodge; a key block stops one identity's adverts.</p>
+      <ul class="list" id="blocks"></ul>
+      <form class="row-form" id="block-form">
+        <label><span>Block by</span><select id="block-kind"><option value="name">Name</option><option value="key">Public key</option></select></label>
+        <label class="grow"><span>Name or key</span><input id="block-value" autocomplete="off" required maxlength="64"></label>
+        <label class="grow"><span>Reason (admins only)</span><input id="block-reason" autocomplete="off" maxlength="200"></label>
+        <label><span>For</span><select id="block-days"><option value="1">1 day</option><option value="7">7 days</option><option value="30">30 days</option><option value="0" selected>Until removed</option></select></label>
+        <button type="submit" class="primary">Block</button>
+      </form>
+      <h3>Senders, last 7 days</h3>
+      <ul class="list compact" id="senders"></ul>
+    </section>
+
+    <section class="box">
+      <h2>Nodes</h2>
+      <p class="note">Each node reports which set of rooms and blocks it applied. Older firmware, or a node with <code>backbone_policy = false</code>, doesn't take them.</p>
+      <ul class="list" id="nodes"></ul>
+    </section>
+
+    <section class="box">
+      <h2>Admins</h2>
+      <ul class="list" id="admins"></ul>
+      <h3>Invite an admin</h3>
+      <form class="row-form" id="invite-form">
+        <label class="grow"><span>Email</span><input id="invite-email" type="email" autocomplete="off" required></label>
+        <button type="submit" class="primary">Create invite</button>
+      </form>
+      <div class="invite-link" id="invite-link" hidden>
+        <p>Send this link to <b id="invite-to"></b>. It works once, for 7 days:</p>
+        <pre class="conf" id="invite-url"></pre>
+        <button type="button" class="copy" id="invite-copy">Copy</button>
+      </div>
+      <ul class="list compact" id="invites"></ul>
+    </section>
+
+    <section class="box">
+      <h2>Log</h2>
+      <ol class="feed" id="audit"></ol>
+    </section>
+  </div>
+</main>
+<script src="/admin.js"></script>
+</body>
+</html>

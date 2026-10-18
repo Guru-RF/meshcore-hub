@@ -73,6 +73,25 @@
     </div>
 
     <div class="panel" id="tab-join" hidden>
+      <h3>Join on RF</h3>
+      <p>Any MeshCore repeater or companion can join the network over the air. Every node uses the same radio settings:</p>
+      <table class="heard radio">
+        <tr><td>Frequency</td><td>434.890 MHz</td></tr>
+        <tr><td>Bandwidth</td><td>62.5 kHz</td></tr>
+        <tr><td>Spreading factor</td><td>8</td></tr>
+        <tr><td>Coding rate</td><td>4/8</td></tr>
+        <tr><td>Sync word</td><td>MeshCore default (private, 0x12)</td></tr>
+      </table>
+      <p>On a stock MeshCore repeater, enter this on its command line (serial, or remote admin in the app), then reboot it:</p>
+      <pre class="conf">set radio 434.890,62.5,8,8
+reboot</pre>
+      <p class="note">The last value is the coding rate's denominator: 8 means 4/8. The settings apply after the reboot.</p>
+      <p>In the MeshCore app, set the same frequency, bandwidth, spreading factor and coding rate in the radio settings.</p>
+
+      <h3>Channels</h3>
+      <p>Scan a code with the MeshCore app to add the channel. A hashtag channel can also be joined by typing its name in the app. These channels are public: anyone with the key can read them.</p>
+      <div class="channels" id="channels"><p class="empty">Loading…</p></div>
+
       <h3>Connect a repeater or hotspot to the backbone</h3>
       <p>The backbone joins RF islands over the internet and feeds this map. A repeater opens a UDP session to the hub, so it works behind NAT and on 4G. When the hub is unreachable the repeater carries on exactly as before.</p>
       <ol class="steps">

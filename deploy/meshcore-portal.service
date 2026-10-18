@@ -7,15 +7,20 @@ Wants=meshcore-hubd.service
 [Service]
 User=meshcore-portal
 Group=meshcore-portal
-# Read the hub's database and event socket; never its key.
+# The hub's database (read, plus the admins' rooms and blocks) and its event
+# socket; never its key. Admin accounts and passkeys are in its own state
+# directory, which only this user can read.
 SupplementaryGroups=meshcore-hub
-ExecStart=/usr/local/bin/meshcore-portal --listen 127.0.0.1:8080 --db /var/lib/meshcore-hub/hub.db --events /run/meshcore-hub/events.sock
+StateDirectory=meshcore-portal
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/meshcore-portal --listen 127.0.0.1:8080 --db /var/lib/meshcore-hub/hub.db --events /run/meshcore-hub/events.sock --admin-db /var/lib/meshcore-portal/admin.db --origin https://be.mesh73.net
 Restart=always
 RestartSec=2
 
 NoNewPrivileges=yes
 ProtectSystem=strict
-# SQLite readers of a WAL database update its shared-memory index.
+# SQLite readers of a WAL database update its shared-memory index, and the
+# admins write rooms and blocks.
 ReadWritePaths=/var/lib/meshcore-hub
 ProtectHome=yes
 PrivateTmp=yes

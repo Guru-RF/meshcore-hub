@@ -15,6 +15,7 @@ use serde_json::Value;
 
 use crate::config::Retention;
 use crate::core::{Kind, PktHash, Pub};
+use meshcore_proto::wire::PolicyEntry;
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
@@ -107,6 +108,24 @@ CREATE TABLE IF NOT EXISTS offers (
     detail TEXT
 );
 CREATE INDEX IF NOT EXISTS offers_ts ON offers (ts);
+-- Rooms and blocks ("Rooms and blocks" in docs/backbone.md): written by the
+-- portal's room admins, read by the hub (load_policy), which sends them to
+-- the nodes with POLICY. Block values match ignoring ASCII case.
+CREATE TABLE IF NOT EXISTS rooms (
+    name TEXT PRIMARY KEY,
+    created_ts INTEGER NOT NULL,
+    created_by TEXT
+);
+CREATE TABLE IF NOT EXISTS blocks (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('name', 'key')),
+    value TEXT NOT NULL COLLATE NOCASE,
+    reason TEXT,
+    created_ts INTEGER NOT NULL,
+    created_by TEXT,
+    expires_ts INTEGER,
+    UNIQUE (kind, value)
+);
 CREATE TABLE IF NOT EXISTS sessions_log (
     id INTEGER PRIMARY KEY,
     ts INTEGER NOT NULL,
@@ -203,6 +222,42 @@ fn add_column(db: &Connection, table: &str, col: &str, def: &str) -> Result<bool
         db.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"), [])?;
     }
     Ok(n == 0)
+}
+
+/// A second connection for reading what others write (the rooms and blocks).
+pub fn open_reader(path: &Path) -> Result<Connection> {
+    let db = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX)
+        .with_context(|| format!("opening {} to read", path.display()))?;
+    db.busy_timeout(Duration::from_secs(2))?;
+    Ok(db)
+}
+
+/// The rooms and the blocks in force at `now`, in a stable order.
+pub fn load_policy(db: &Connection, now: u32) -> Result<Vec<PolicyEntry>> {
+    let mut out = Vec::new();
+    let mut stmt = db.prepare_cached("SELECT name FROM rooms ORDER BY created_ts, name")?;
+    for name in stmt.query_map([], |r| r.get::<_, String>(0))? {
+        out.push(PolicyEntry::Room(name?));
+    }
+    let mut stmt = db.prepare_cached("SELECT kind, value FROM blocks WHERE expires_ts IS NULL OR expires_ts > ?1 ORDER BY id")?;
+    for row in stmt.query_map([now], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+        let (kind, value) = row?;
+        match kind.as_str() {
+            "name" => out.push(PolicyEntry::BlockName(value)),
+            "key" => {
+                if let Some(k) = meshcore_proto::unhex::<32>(&value) {
+                    out.push(PolicyEntry::BlockKey(k));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(out)
+}
+
+/// A meta value written earlier.
+pub fn meta(db: &Connection, k: &str) -> Result<Option<String>> {
+    Ok(db.query_row("SELECT v FROM meta WHERE k = ?1", [k], |r| r.get(0)).optional()?)
 }
 
 /// Run the writer until every sender is dropped.

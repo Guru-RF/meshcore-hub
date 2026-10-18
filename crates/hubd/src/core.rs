@@ -10,7 +10,7 @@ use std::net::{IpAddr, SocketAddr};
 
 use ed25519_dalek::SigningKey;
 use meshcore_proto::meshcore::{Advert, Channel, Packet, ptype};
-use meshcore_proto::wire::{self, ROLE_BRIDGE, ROLE_OBSERVE, Replay, bye, disp, ty};
+use meshcore_proto::wire::{self, PolicyEntry, ROLE_BRIDGE, ROLE_OBSERVE, Replay, bye, disp, policy, ty};
 use serde::Serialize;
 use serde_json::{Value, json};
 use tracing::{debug, info, warn};
@@ -33,6 +33,8 @@ pub mod offer {
     pub const NO_PEER: &str = "no_peer";
     /// Every target was over its rate limit.
     pub const RATE_LIMITED: &str = "rate_limited";
+    /// From a blocked sender, name or key ("Rooms and blocks").
+    pub const BLOCKED: &str = "blocked";
 }
 pub type PktHash = [u8; 8];
 
@@ -170,6 +172,8 @@ struct Rep {
     /// Feeds the path-tail rule for direct frames.
     flood_paths: HashMap<(u8, Vec<u8>), u64>,
     last_warn_ms: u64,
+    /// When the last POLICY set went to this node.
+    policy_sent_ms: u64,
 }
 
 impl Rep {
@@ -185,6 +189,7 @@ impl Rep {
             pending: None,
             flood_paths: HashMap::new(),
             last_warn_ms: 0,
+            policy_sent_ms: 0,
         }
     }
 
@@ -206,6 +211,17 @@ struct Entry {
 
 pub type Rng = Box<dyn FnMut(&mut [u8]) + Send>;
 
+/// The rooms and blocks the hub sends with POLICY and applies itself.
+#[derive(Default)]
+struct Policy {
+    version: u32,
+    entries: Vec<PolicyEntry>,
+    pages: Vec<Vec<u8>>,
+    /// ASCII-lowercased: names match ignoring ASCII case only.
+    block_names: HashSet<String>,
+    block_keys: HashSet<Pub>,
+}
+
 pub struct Hub {
     key: SigningKey,
     hub_pub: Pub,
@@ -217,7 +233,10 @@ pub struct Hub {
     hello_rl: HashMap<IpAddr, u64>,
     reset_rl: HashMap<IpAddr, u64>,
     unknown_warned: HashMap<Pub, u64>,
+    /// From hub.toml; `channels` adds the policy's rooms.
+    base_channels: Vec<Channel>,
     channels: Vec<Channel>,
+    policy: Policy,
     rng: Rng,
     out: Vec<Out>,
     stats: Stats,
@@ -249,7 +268,9 @@ impl Hub {
             hello_rl: HashMap::new(),
             reset_rl: HashMap::new(),
             unknown_warned: HashMap::new(),
+            base_channels: channels.clone(),
             channels,
+            policy: Policy::default(),
             rng,
             out: Vec::new(),
             stats: Stats::default(),
@@ -264,9 +285,138 @@ impl Hub {
         self.hub_pub
     }
 
-    /// Replace the channels whose text the hub decodes for the portal.
+    /// Replace the channels from hub.toml whose text the hub decodes for the
+    /// portal. The policy's rooms are decoded as well.
     pub fn set_channels(&mut self, channels: Vec<Channel>) {
-        self.channels = channels;
+        self.base_channels = channels;
+        self.update_channels();
+    }
+
+    fn update_channels(&mut self) {
+        let mut chans = self.base_channels.clone();
+        for e in &self.policy.entries {
+            if let PolicyEntry::Room(name) = e {
+                let c = Channel::hashtag(name);
+                if !chans.iter().any(|x| x.key() == c.key()) {
+                    chans.push(c);
+                }
+            }
+        }
+        // For the portal's Join page: every channel the network carries.
+        let list: Vec<Value> = chans.iter().map(|c| json!({"name": c.name, "key": hx(c.key()), "hash": c.hash})).collect();
+        self.store(Op::Meta(vec![("channels".into(), Value::Array(list).to_string())]));
+        self.channels = chans;
+    }
+
+    /// The current POLICY version, 0 before the first set.
+    pub fn policy_version(&self) -> u32 {
+        self.policy.version
+    }
+
+    /// Replace the rooms and blocks ("Rooms and blocks"). `version` must
+    /// change whenever the set does. With `now`, the set goes to every
+    /// session at once; otherwise each gets it when it comes up.
+    ///
+    /// Entries that don't fit the wire, go over the limits, or block an
+    /// allowlisted node by callsign, name or key are left out.
+    pub fn set_policy(&mut self, now: Option<Now>, version: u32, entries: Vec<PolicyEntry>) {
+        let ours: HashSet<String> =
+            self.reps.values().flat_map(|r| [r.callsign.to_ascii_lowercase(), r.name.to_ascii_lowercase()]).filter(|s| !s.is_empty()).collect();
+        let (mut rooms, mut blocks) = (0, 0);
+        let mut kept = Vec::new();
+        for e in entries {
+            let ok = match &e {
+                _ if !e.valid() => false,
+                PolicyEntry::Room(_) => {
+                    rooms += 1;
+                    rooms <= policy::MAX_ROOMS
+                }
+                PolicyEntry::BlockName(n) if ours.contains(&n.to_ascii_lowercase()) => false,
+                PolicyEntry::BlockKey(k) if self.reps.contains_key(k) => false,
+                PolicyEntry::BlockName(_) | PolicyEntry::BlockKey(_) => {
+                    blocks += 1;
+                    blocks <= policy::MAX_BLOCKS
+                }
+            };
+            if ok {
+                kept.push(e);
+            } else {
+                warn!("policy {version}: left out {e:?} (invalid, over the limit, or a backbone node)");
+            }
+        }
+        let Some(pages) = wire::build_policy(version, &kept) else {
+            warn!("policy {version}: more than {} pages, keeping version {}", policy::MAX_PAGES, self.policy.version);
+            return;
+        };
+        let mut p = Policy { version, pages, ..Default::default() };
+        for e in &kept {
+            match e {
+                PolicyEntry::BlockName(n) => {
+                    p.block_names.insert(n.to_ascii_lowercase());
+                }
+                PolicyEntry::BlockKey(k) => {
+                    p.block_keys.insert(*k);
+                }
+                PolicyEntry::Room(_) => {}
+            }
+        }
+        p.entries = kept;
+        info!(
+            "policy {version}: {} room(s), {} block(s), {} page(s)",
+            p.entries.iter().filter(|e| matches!(e, PolicyEntry::Room(_))).count(),
+            p.block_names.len() + p.block_keys.len(),
+            p.pages.len()
+        );
+        self.policy = p;
+        self.update_channels();
+        if let Some(now) = now {
+            let up: Vec<Pub> = self.reps.iter().filter(|(_, r)| r.cur.is_some()).map(|(pk, _)| *pk).collect();
+            for pk in up {
+                self.send_policy(now, &pk);
+            }
+        }
+    }
+
+    /// Every page of the current set, back to back.
+    fn send_policy(&mut self, now: Now, pk: &Pub) {
+        if self.policy.version == 0 {
+            return;
+        }
+        for page in self.policy.pages.clone() {
+            self.send_session(pk, ty::POLICY, &page);
+        }
+        if let Some(r) = self.reps.get_mut(pk) {
+            r.policy_sent_ms = now.ms;
+        }
+    }
+
+    fn name_blocked(&self, name: &str) -> bool {
+        !self.policy.block_names.is_empty() && self.policy.block_names.contains(&name.to_ascii_lowercase())
+    }
+
+    /// Why a frame is blocked, if it is: a group message whose sender is
+    /// blocked (on a channel the hub can decode), or an advert by a blocked
+    /// name or key.
+    fn blocked(&self, pkt: &Packet) -> Option<String> {
+        if self.policy.block_names.is_empty() && self.policy.block_keys.is_empty() {
+            return None;
+        }
+        match pkt.ptype() {
+            ptype::GRP_TXT => {
+                let t = self.channels.iter().find_map(|c| c.decrypt(pkt.payload))?;
+                let s = t.sender?;
+                self.name_blocked(&s).then(|| format!("sender {s} is blocked"))
+            }
+            ptype::ADVERT => {
+                let a = Advert::decode(pkt.payload)?;
+                if self.policy.block_keys.contains(&a.public_key) {
+                    return Some(format!("advert key {}… is blocked", hx(&a.public_key[..4])));
+                }
+                let n = a.name?;
+                self.name_blocked(&n).then(|| format!("advert name {n} is blocked"))
+            }
+            _ => None,
+        }
     }
 
     pub fn stats(&self) -> &Stats {
@@ -529,6 +679,7 @@ impl Hub {
             info!("{callsign}: session {sid:08x} up from {src}, roles {}", role_names(roles).join("+"));
             self.store(Op::Up { pk, ts: now.unix, roles, name });
             self.event(json!({"t": "up", "rep": callsign, "pub": hx(&pk), "roles": role_names(roles), "ts": now.unix}));
+            self.send_policy(now, &pk);
         }
 
         let roles = self.reps[&pk].cur.as_ref().map_or(0, |s| s.roles);
@@ -670,6 +821,9 @@ impl Hub {
                 let Some((chan, t)) = self.channels.iter().find_map(|c| c.decrypt(pkt.payload).map(|t| (c.name.clone(), t))) else {
                     return;
                 };
+                if t.sender.as_deref().is_some_and(|s| self.name_blocked(s)) {
+                    return;
+                }
                 self.store(Op::Message {
                     hash: h,
                     channel: chan.clone(),
@@ -763,6 +917,15 @@ impl Hub {
             warn!("{callsign}: reports itself as a {role}, its callsign suggests a {} (repeater_prefixes in hub.toml); the portal shows {role}", r.kind.name());
             r.role_mismatch = Some(role.to_string());
         }
+        // The policy ack: resend a set the node doesn't hold, at most once
+        // per status_s. A STATUS without `policy` means the node doesn't take it.
+        let reported = v.get("policy").filter(|p| p.is_object()).map(|p| p.get("version").and_then(Value::as_u64).unwrap_or(0) as u32);
+        let resend = self.reps.get(&pk).is_some_and(|r| {
+            reported.is_some_and(|ver| ver != self.policy.version) && now.ms.saturating_sub(r.policy_sent_ms) >= self.p.status_s as u64 * 1000
+        });
+        if resend {
+            self.send_policy(now, &pk);
+        }
         self.store(Op::Status { pk, ts: now.unix, json: v.clone() });
         self.event(json!({"t": "status", "rep": callsign, "pub": hx(&pk), "s": v, "ts": now.unix}));
     }
@@ -832,6 +995,12 @@ impl Hub {
         let Some((frame, src, own)) = e.frame.clone() else { return };
         let skip: HashSet<Pub> = e.reported.union(&e.sent).copied().collect();
         let Some(pkt) = Packet::parse(&frame) else { return };
+        if let Some(why) = self.blocked(&pkt) {
+            if first {
+                self.offer(now, h, src, &pkt, own, offer::BLOCKED, 0, why);
+            }
+            return;
+        }
 
         // The other bridge repeaters online; those in `skip` already have it.
         let peers: Vec<Pub> = self.reps.iter().filter(|(pk, r)| **pk != src && r.bridge_up()).map(|(pk, _)| *pk).collect();

@@ -1,14 +1,19 @@
-//! meshcore-portal: the public map and monitor for the IP backbone.
+//! meshcore-portal: the public map and monitor for the IP backbone, and the
+//! room admins' pages.
 //!
-//! Reads the hub's SQLite file read-only, relays the hub's live events
-//! (a Unix socket of JSON lines) to browsers over a WebSocket, and serves
-//! the single-page map from `web/`, compiled into the binary.
+//! Reads the hub's SQLite file, relays the hub's live events (a Unix socket
+//! of JSON lines) to browsers over a WebSocket, and serves the pages from
+//! `web/`, compiled into the binary. Room admins sign in with a passkey and
+//! write the rooms and blocks into the hub's database (`admin.rs`).
 //!
 //! ```text
 //! meshcore-portal [--listen 127.0.0.1:8080] [--db /var/lib/meshcore-hub/hub.db]
 //!                 [--events /run/meshcore-hub/events.sock]
+//!                 [--admin-db /var/lib/meshcore-portal/admin.db] [--origin https://be.mesh73.net]
+//! meshcore-portal [--admin-db FILE] [--origin URL] invite <email>
 //! ```
 
+mod admin;
 mod api;
 
 use std::path::PathBuf;
@@ -28,6 +33,7 @@ use tracing::{info, warn};
 
 pub struct AppState {
     pub db: PathBuf,
+    pub admin: admin::Admin,
     live: broadcast::Sender<Arc<str>>,
     ws_slots: Arc<Semaphore>,
 }
@@ -38,13 +44,24 @@ struct Args {
     listen: String,
     db: PathBuf,
     events: PathBuf,
+    admin_db: PathBuf,
+    origin: String,
+    /// `invite <email>`
+    invite: Option<String>,
 }
+
+const USAGE: &str = "usage: meshcore-portal [--listen ADDR] [--db FILE] [--events SOCKET] [--admin-db FILE] [--origin URL]
+       meshcore-portal [--admin-db FILE] [--origin URL] invite <email>
+";
 
 fn args() -> Result<Args> {
     let mut a = Args {
         listen: "127.0.0.1:8080".into(),
         db: "/var/lib/meshcore-hub/hub.db".into(),
         events: "/run/meshcore-hub/events.sock".into(),
+        admin_db: "/var/lib/meshcore-portal/admin.db".into(),
+        origin: "https://be.mesh73.net".into(),
+        invite: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(k) = it.next() {
@@ -53,11 +70,14 @@ fn args() -> Result<Args> {
             "--listen" => a.listen = v()?,
             "--db" => a.db = v()?.into(),
             "--events" => a.events = v()?.into(),
+            "--admin-db" => a.admin_db = v()?.into(),
+            "--origin" => a.origin = v()?,
+            "invite" => a.invite = Some(v()?),
             "-h" | "--help" => {
-                println!("usage: meshcore-portal [--listen ADDR] [--db FILE] [--events SOCKET]");
+                print!("{USAGE}");
                 std::process::exit(0);
             }
-            other => bail!("unknown argument {other:?}"),
+            other => bail!("unknown argument {other:?}\n{USAGE}"),
         }
     }
     Ok(a)
@@ -73,12 +93,16 @@ fn main() -> Result<()> {
         fmt.init();
     }
     let a = args()?;
+    if let Some(email) = &a.invite {
+        return admin::cli_invite(&a.admin_db, &a.origin, email);
+    }
     tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?.block_on(serve(a))
 }
 
 async fn serve(a: Args) -> Result<()> {
     let (live, _) = broadcast::channel(1024);
-    let state = Arc::new(AppState { db: a.db.clone(), live: live.clone(), ws_slots: Arc::new(Semaphore::new(512)) });
+    let admin = admin::Admin::new(a.admin_db.clone(), &a.origin)?;
+    let state = Arc::new(AppState { db: a.db.clone(), admin, live: live.clone(), ws_slots: Arc::new(Semaphore::new(512)) });
     tokio::spawn(relay_events(a.events.clone(), live));
 
     let app = Router::new()
@@ -86,12 +110,22 @@ async fn serve(a: Args) -> Result<()> {
         .route("/app.js", get(|| asset("app.js")))
         .route("/style.css", get(|| asset("style.css")))
         .route("/favicon.svg", get(|| asset("favicon.svg")))
+        .route("/admin", get(|| asset("admin.html")))
+        .route("/admin.js", get(|| asset("admin.js")))
         .route("/api/live", get(ws))
         .merge(api::routes())
+        .merge(admin::routes())
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&a.listen).await?;
-    info!("portal on http://{} (db {}, events {})", listener.local_addr()?, a.db.display(), a.events.display());
+    info!(
+        "portal on http://{} (db {}, events {}, admins {}, origin {})",
+        listener.local_addr()?,
+        a.db.display(),
+        a.events.display(),
+        a.admin_db.display(),
+        a.origin
+    );
     axum::serve(listener, app).with_graceful_shutdown(shutdown()).await?;
     Ok(())
 }
@@ -174,6 +208,8 @@ web! {
     "app.js" => "text/javascript; charset=utf-8",
     "style.css" => "text/css; charset=utf-8",
     "favicon.svg" => "image/svg+xml",
+    "admin.html" => "text/html; charset=utf-8",
+    "admin.js" => "text/javascript; charset=utf-8",
 }
 
 async fn asset(name: &'static str) -> Response {

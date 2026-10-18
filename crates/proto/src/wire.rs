@@ -43,6 +43,7 @@ pub mod ty {
     pub const BYE_UP: u8 = 0x1F;
     pub const KEEPALIVE_ACK: u8 = 0x20;
     pub const FRAME: u8 = 0x21;
+    pub const POLICY: u8 = 0x22;
     pub const BYE_DOWN: u8 = 0x2F;
 
     /// Types 0x10..=0x1F flow repeater -> hub under `k_up`.
@@ -540,6 +541,125 @@ pub fn parse_frame(b: &[u8]) -> Result<([u8; 8], &[u8]), Error> {
     Ok((b[2..10].try_into().unwrap(), &b[10..10 + n]))
 }
 
+/// POLICY ("Rooms and blocks"): entry kinds and limits.
+pub mod policy {
+    pub const ROOM: u8 = 1;
+    pub const BLOCK_NAME: u8 = 2;
+    pub const BLOCK_KEY: u8 = 3;
+    /// Bytes of entries in one page: a full datagram less header, MAC and
+    /// the 6-byte page header.
+    pub const PAGE_ENTRIES: usize = super::MAX_DGRAM - 12 - 16 - 6;
+    pub const MAX_PAGES: usize = 16;
+    pub const MAX_ROOMS: usize = 32;
+    pub const MAX_BLOCKS: usize = 256;
+}
+
+/// One entry of a POLICY set.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum PolicyEntry {
+    /// A room, its name exactly as hashed: `#` and 1-30 more bytes.
+    Room(String),
+    /// A blocked node name, 1-31 bytes: group-message senders and advert names.
+    BlockName(String),
+    /// A blocked Ed25519 public key: adverts.
+    BlockKey([u8; 32]),
+}
+
+impl PolicyEntry {
+    fn kind(&self) -> u8 {
+        match self {
+            PolicyEntry::Room(_) => policy::ROOM,
+            PolicyEntry::BlockName(_) => policy::BLOCK_NAME,
+            PolicyEntry::BlockKey(_) => policy::BLOCK_KEY,
+        }
+    }
+
+    fn value(&self) -> &[u8] {
+        match self {
+            PolicyEntry::Room(s) | PolicyEntry::BlockName(s) => s.as_bytes(),
+            PolicyEntry::BlockKey(k) => k,
+        }
+    }
+
+    /// `kind`, `len`, value: the entry as it goes on the wire.
+    pub fn encode(&self) -> Vec<u8> {
+        let v = self.value();
+        let mut b = vec![self.kind(), v.len() as u8];
+        b.extend_from_slice(v);
+        b
+    }
+
+    /// Fits the wire format.
+    pub fn valid(&self) -> bool {
+        match self {
+            PolicyEntry::Room(s) => s.starts_with('#') && (2..=31).contains(&s.len()),
+            PolicyEntry::BlockName(s) => (1..=31).contains(&s.len()),
+            PolicyEntry::BlockKey(_) => true,
+        }
+    }
+}
+
+/// POLICY bodies for one complete set, page by page; `None` when the set
+/// needs more than 16 pages. Entries must be `valid()`.
+pub fn build_policy(version: u32, entries: &[PolicyEntry]) -> Option<Vec<Vec<u8>>> {
+    let mut pages: Vec<Vec<u8>> = vec![vec![]];
+    for e in entries {
+        let enc = e.encode();
+        if pages.last().is_some_and(|p| p.len() + enc.len() > policy::PAGE_ENTRIES) {
+            pages.push(vec![]);
+        }
+        pages.last_mut()?.extend_from_slice(&enc);
+    }
+    if pages.len() > policy::MAX_PAGES {
+        return None;
+    }
+    let n = pages.len() as u8;
+    Some(
+        pages
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mut b = version.to_le_bytes().to_vec();
+                b.extend_from_slice(&[i as u8 + 1, n]);
+                b.extend_from_slice(&p);
+                b
+            })
+            .collect(),
+    )
+}
+
+/// Parse a POLICY body: (version, page, pages, entries). Unknown kinds, and
+/// entries whose length is wrong for their kind, are skipped.
+pub fn parse_policy(b: &[u8]) -> Result<(u32, u8, u8, Vec<PolicyEntry>), Error> {
+    if b.len() < 6 {
+        return Err(Error::Short);
+    }
+    let version = u32::from_le_bytes(b[0..4].try_into().unwrap());
+    let (page, pages) = (b[4], b[5]);
+    if version == 0 || pages == 0 || pages as usize > policy::MAX_PAGES || page == 0 || page > pages {
+        return Err(Error::Length);
+    }
+    let mut out = Vec::new();
+    let mut i = 6;
+    while i < b.len() {
+        if i + 2 > b.len() || i + 2 + b[i + 1] as usize > b.len() {
+            return Err(Error::Length);
+        }
+        let (kind, v) = (b[i], &b[i + 2..i + 2 + b[i + 1] as usize]);
+        i += 2 + v.len();
+        let e = match kind {
+            policy::ROOM => std::str::from_utf8(v).ok().map(|s| PolicyEntry::Room(s.into())),
+            policy::BLOCK_NAME => std::str::from_utf8(v).ok().map(|s| PolicyEntry::BlockName(s.into())),
+            policy::BLOCK_KEY => v.try_into().ok().map(PolicyEntry::BlockKey),
+            _ => None,
+        };
+        if let Some(e) = e.filter(PolicyEntry::valid) {
+            out.push(e);
+        }
+    }
+    Ok((version, page, pages, out))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -645,6 +765,24 @@ mod tests {
         assert_eq!(ka, h("4d4201104d3c2b1a0100000095909f12cd7628661a2ba746b8a8e276"));
         let ack = seal(ty::KEEPALIVE_ACK, 0x1a2b3c4d, 1, &[], &k_down);
         assert_eq!(ack, h("4d4201204d3c2b1a0100000008b340d0bfeb875470dd700794c28f87"));
+
+        // POLICY, hub -> repeater, seq 2: room "#pra", block name "Spammer",
+        // block key = the repeater's public key.
+        let entries = [
+            PolicyEntry::Room("#pra".into()),
+            PolicyEntry::BlockName("Spammer".into()),
+            PolicyEntry::BlockKey(v.rep.verifying_key().to_bytes()),
+        ];
+        let pages = build_policy(1792000200, &entries).unwrap();
+        assert_eq!(pages.len(), 1);
+        let pol = seal(ty::POLICY, 0x1a2b3c4d, 2, &pages[0], &k_down);
+        assert_eq!(
+            pol,
+            h("4d4201224d3c2b1a02000000c8c0cf6a010101042370726102075370616d6d65
+               72032003a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc866412
+               5531b8dfa5bd382036fa2862cbb243ebf7e7a5")
+        );
+        assert_eq!(parse_policy(open(&pol, &k_down).unwrap()).unwrap(), (1792000200, 1, 1, entries.to_vec()));
         assert_eq!(peek(&ka).unwrap(), (ty::KEEPALIVE, 0x1a2b3c4d, 1));
         assert_eq!(open(&ka, &k_up).unwrap(), &[] as &[u8]);
         assert_eq!(open(&ka, &k_down), Err(Error::Mac));
@@ -703,5 +841,44 @@ mod tests {
         let fr = build_frame(&[7; 8], &f);
         assert_eq!(parse_frame(&fr).unwrap(), ([7; 8], &f[..]));
         assert_eq!(parse_bridge(&[0, 0, 1, 2, 3, 4, 5, 6, 7, 8]), Err(Error::Length));
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    #[test]
+    fn pages_split_between_entries_and_cap_at_sixteen() {
+        let mut entries: Vec<PolicyEntry> = (0..policy::MAX_ROOMS).map(|i| PolicyEntry::Room(format!("#room{i:02}-{}", "x".repeat(20)))).collect();
+        entries.extend((0..policy::MAX_BLOCKS).map(|i| PolicyEntry::BlockKey([i as u8; 32])));
+        let pages = build_policy(7, &entries).unwrap();
+        assert!(pages.len() > 1 && pages.len() <= policy::MAX_PAGES);
+        let mut back = Vec::new();
+        for (i, p) in pages.iter().enumerate() {
+            assert!(p.len() - 6 <= policy::PAGE_ENTRIES);
+            let (v, page, n, e) = parse_policy(p).unwrap();
+            assert_eq!((v, page as usize, n as usize), (7, i + 1, pages.len()));
+            back.extend(e);
+        }
+        assert_eq!(back, entries, "no entry split or lost");
+
+        let empty = build_policy(9, &[]).unwrap();
+        assert_eq!(empty, vec![vec![9, 0, 0, 0, 1, 1]], "an empty set is one page without entries");
+
+        let too_many: Vec<PolicyEntry> = (0..600).map(|i| PolicyEntry::BlockKey([i as u8; 32])).collect();
+        assert!(build_policy(1, &too_many).is_none());
+    }
+
+    #[test]
+    fn parse_skips_unknown_and_wrong_lengths_but_rejects_overruns() {
+        let mut b = vec![1, 0, 0, 0, 1, 1];
+        b.extend_from_slice(&[9, 2, 0xAA, 0xBB]); // unknown kind
+        b.extend_from_slice(&[3, 2, 0xAA, 0xBB]); // key of the wrong length
+        b.extend_from_slice(&[1, 3, b'p', b'r', b'a']); // room without '#'
+        b.extend_from_slice(&[2, 3, b'B', b'o', b'b']);
+        assert_eq!(parse_policy(&b).unwrap().3, vec![PolicyEntry::BlockName("Bob".into())]);
+        b.extend_from_slice(&[2, 9, b'x']);
+        assert_eq!(parse_policy(&b), Err(Error::Length));
     }
 }

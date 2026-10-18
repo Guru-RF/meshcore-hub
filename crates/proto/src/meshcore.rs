@@ -299,6 +299,8 @@ pub struct Channel {
     pub name: String,
     /// Key bytes, zero-padded to 32 like the repeater's `mc_pub_channel_t`.
     secret: [u8; 32],
+    /// 16 or 32: how much of `secret` is the key.
+    len: usize,
     /// One-byte channel hash: SHA256(key bytes)[0].
     pub hash: u8,
 }
@@ -320,7 +322,12 @@ impl Channel {
         let mut secret = [0u8; 32];
         secret[..key.len()].copy_from_slice(key);
         let hash = Sha256::digest(key)[0];
-        Some(Channel { name: name.to_string(), secret, hash })
+        Some(Channel { name: name.to_string(), secret, len: key.len(), hash })
+    }
+
+    /// The channel key as published, 16 or 32 bytes.
+    pub fn key(&self) -> &[u8] {
+        &self.secret[..self.len]
     }
 
     /// A published key, 16 or 32 bytes, as hex or base64.

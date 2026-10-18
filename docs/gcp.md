@@ -80,7 +80,8 @@ certificate as soon as it starts.
 
 - **`deploy/hub.toml`** is the allowlist (`[[repeater]]` entries with callsign,
   `pub=` key and roles) and the public channels the portal decodes.
-- **`deploy/Caddyfile`:** replace `be.mesh73.net` with your portal name.
+- **`deploy/Caddyfile`** and `--origin` in **`deploy/meshcore-portal.service`:**
+  replace `be.mesh73.net` with your portal name.
 
 ## 4. Deploy
 
@@ -126,6 +127,21 @@ still match.
 `roles/secretmanager.secretAccessor` on the secret. The VM itself needs no
 access: it keeps its own copy, root-only (mode 0600). The service reads it
 through systemd `LoadCredential=`.
+
+## 6. The first room admin
+
+Admins are invite only, and the first one comes from the command line:
+
+```sh
+gcloud compute ssh $VM --project $PROJECT --zone $ZONE --tunnel-through-iap \
+  --command 'sudo -u meshcore-portal meshcore-portal --origin https://xx.mesh73.net invite you@example.com'
+```
+
+It prints a one-time link, valid 7 days. Open it and create a passkey; from
+then on admins invite each other at `/admin`. Use the same command to get back
+in after losing every passkey. If your portal name isn't `be.mesh73.net`, also
+change `--origin` in `deploy/meshcore-portal.service`: passkeys are bound to
+that name.
 
 ## Rebuilding or moving the VM
 
@@ -174,4 +190,6 @@ still limited by each repeater's content policy and rate limit.
 | SSH | `gcloud compute ssh $VM --project $PROJECT --zone $ZONE --tunnel-through-iap` |
 | Logs | `journalctl -u meshcore-hubd -u meshcore-portal -f` |
 | Add or remove a repeater | Edit `deploy/hub.toml`, then run `deploy/deploy.sh`. |
+| Rooms and blocked users | The portal's `/admin` page. |
+| Invite an admin from the shell | `sudo -u meshcore-portal meshcore-portal invite you@example.com` |
 | Hub public key | `sudo meshcore-hubd pubkey`, or the portal's Join tab. |

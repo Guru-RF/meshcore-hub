@@ -28,6 +28,7 @@ pub fn routes() -> Router<Shared> {
         .route("/api/links", get(links))
         .route("/api/messages", get(messages))
         .route("/api/activity", get(activity))
+        .route("/api/channels", get(channels))
 }
 
 const DAY: i64 = 86_400;
@@ -71,7 +72,7 @@ where
 }
 
 /// A row as a JSON object keyed by column name.
-fn row_json(row: &Row<'_>) -> rusqlite::Result<Value> {
+pub(crate) fn row_json(row: &Row<'_>) -> rusqlite::Result<Value> {
     let mut m = Map::new();
     let stmt = row.as_ref();
     for (i, name) in stmt.column_names().iter().enumerate() {
@@ -87,7 +88,7 @@ fn row_json(row: &Row<'_>) -> rusqlite::Result<Value> {
     Ok(Value::Object(m))
 }
 
-fn rows(db: &Connection, sql: &str, p: impl rusqlite::Params) -> rusqlite::Result<Vec<Value>> {
+pub(crate) fn rows(db: &Connection, sql: &str, p: impl rusqlite::Params) -> rusqlite::Result<Vec<Value>> {
     let mut stmt = db.prepare_cached(sql)?;
     let it = stmt.query_map(p, row_json)?;
     it.collect()
@@ -297,9 +298,13 @@ async fn messages(State(st): State<Shared>, Query(q): Query<MsgQuery>) -> Respon
     query(st, move |db| {
         let mut list = rows(
             db,
-            "SELECT hash, channel, sender, text, sent_ts, first_heard FROM messages
-             WHERE first_heard < ?1 ORDER BY first_heard DESC LIMIT ?2",
-            params![before, limit],
+            // Blocked senders' messages are not shown (the hub stops keeping
+            // them once blocked; this hides what came before).
+            "SELECT hash, channel, sender, text, sent_ts, first_heard FROM messages m
+             WHERE first_heard < ?1 AND NOT EXISTS (
+                 SELECT 1 FROM blocks b WHERE b.kind = 'name' AND b.value = m.sender AND (b.expires_ts IS NULL OR b.expires_ts > ?3))
+             ORDER BY first_heard DESC LIMIT ?2",
+            params![before, limit, now()],
         )?;
         let mut heard: HashMap<String, Vec<Value>> = HashMap::new();
         if let (Some(first), Some(last)) = (list.last(), list.first()) {
@@ -379,4 +384,64 @@ async fn activity(State(st): State<Shared>) -> Response {
         }))
     })
     .await
+}
+
+/// Every channel the network carries (hub.toml's and the admins' rooms, as
+/// the hub publishes them), with the MeshCore app's channel link and its QR.
+async fn channels(State(st): State<Shared>) -> Response {
+    query(st, |db| {
+        let raw: Option<String> = db.query_row("SELECT v FROM meta WHERE k = 'channels'", [], |r| r.get(0)).optional()?;
+        let list: Vec<Value> = raw.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
+        let out: Vec<Value> = list
+            .iter()
+            .map(|c| {
+                let name = c["name"].as_str().unwrap_or_default();
+                let key = c["key"].as_str().unwrap_or_default();
+                // docs/qr_codes.md in MeshCore; the app takes 16-byte keys only.
+                let uri = (key.len() == 32).then(|| format!("meshcore://channel/add?name={}&secret={key}", query_component(name)));
+                json!({
+                    "name": name, "key": key, "hash": c["hash"], "hashtag": name.starts_with('#'),
+                    "uri": uri, "qr": uri.as_deref().map(qr_svg),
+                })
+            })
+            .collect();
+        Ok(json!(out))
+    })
+    .await
+}
+
+/// A query value the way the MeshCore app (Dart's `Uri`) writes it: letters,
+/// digits and `-._~` as they are, space as `+`, everything else `%XX`.
+fn query_component(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// An inline SVG QR code (no XML prolog, so it can go straight into HTML).
+fn qr_svg(data: &str) -> String {
+    use qrcode::render::svg;
+    let Ok(code) = qrcode::QrCode::new(data.as_bytes()) else { return String::new() };
+    let s = code.render::<svg::Color>().min_dimensions(176, 176).dark_color(svg::Color("#000")).light_color(svg::Color("#fff")).build();
+    s.find("<svg").map(|i| s[i..].to_string()).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn channel_links_match_the_app() {
+        assert_eq!(query_component("#ora"), "%23ora");
+        assert_eq!(query_component("Public"), "Public");
+        assert_eq!(query_component("a b~c"), "a+b~c");
+        let svg = qr_svg("meshcore://channel/add?name=%23ora&secret=d476062ced6481b5733e7cd1b196ed89");
+        assert!(svg.starts_with("<svg") && svg.contains("</svg>"));
+    }
 }

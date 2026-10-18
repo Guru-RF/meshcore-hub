@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use hubd::core::{Allowed, Hub, Kind, Now, Out, Params, Pub};
 use hubd::store::Op;
 use meshcore_proto::meshcore::{Channel, Packet, build_advert, node_type};
-use meshcore_proto::wire::{self, ROLE_BRIDGE, ROLE_OBSERVE, Replay, ty};
+use meshcore_proto::wire::{self, PolicyEntry, ROLE_BRIDGE, ROLE_OBSERVE, Replay, ty};
 
 const T0: u32 = 1_792_000_000;
 
@@ -123,6 +123,10 @@ impl Sim {
         self.seal(ty::OBSERVE, &wire::build_observe(&o))
     }
 
+    fn status(&mut self, json: &serde_json::Value) -> Vec<u8> {
+        self.seal(ty::STATUS, json.to_string().as_bytes())
+    }
+
     fn bridge(&mut self, frame: &[u8], own: bool) -> Vec<u8> {
         let b = wire::Bridge {
             flags: if own { wire::BRIDGE_OWN } else { 0 },
@@ -199,11 +203,33 @@ impl World {
         let w = s.accept_welcome(&replies[0]);
         let ka = s.seal(ty::KEEPALIVE, &[]);
         self.feed(s.addr, &ka);
-        let acks = self.sent_to(s.addr);
-        assert_eq!(acks.len(), 1);
-        assert_eq!(s.open(&acks[0]).0, ty::KEEPALIVE_ACK);
+        // The ACK, after any POLICY pages; those stay queued for the test.
+        let mut got = self.sent_to(s.addr);
+        let ack = got.pop().expect("KEEPALIVE_ACK");
+        assert_eq!(wire::peek(&ack).unwrap().0, ty::KEEPALIVE_ACK);
+        self.out.extend(got.into_iter().map(|d| Out::Send(s.addr, d)));
+        assert_eq!(s.open(&ack).0, ty::KEEPALIVE_ACK);
         self.clock.ms += 1100; // keep HELLO rate limits out of the way
         w
+    }
+
+    /// POLICY sets a repeater received: (version, page, pages, entries).
+    fn policies_for(&mut self, s: &mut Sim) -> Vec<(u32, u8, u8, Vec<PolicyEntry>)> {
+        let mut got = vec![];
+        self.out.retain(|o| match o {
+            Out::Send(a, d) if *a == s.addr && wire::peek(d).unwrap().0 == ty::POLICY => {
+                got.push(d.clone());
+                false
+            }
+            _ => true,
+        });
+        got.iter()
+            .map(|d| {
+                let (t, body) = s.open(d);
+                assert_eq!(t, ty::POLICY);
+                wire::parse_policy(&body).unwrap()
+            })
+            .collect()
     }
 
     /// FRAMEs a repeater received: (src8, frame).
@@ -593,4 +619,104 @@ fn observe_decodes_adverts_and_public_text_only() {
     let d = a.bridge(&txt, false);
     w.feed(a.addr, &d);
     assert_eq!(w.hub.stats().role_denied, 1);
+}
+
+#[test]
+fn policy_goes_to_every_session_and_is_resent_until_acked() {
+    let mut a = Sim::new(seed(1), "ON0AAA", 1001, BOTH);
+    let mut b = Sim::new(seed(2), "ON0BBB", 1002, BOTH);
+    let mut w = World::new(vec![a.allowed(BOTH), b.allowed(BOTH)]);
+    w.connect(&mut a);
+    assert!(w.policies_for(&mut a).is_empty(), "no set yet: nothing sent");
+
+    let spam = SigningKey::from_bytes(&seed(66)).verifying_key().to_bytes();
+    let entries = vec![
+        PolicyEntry::Room("#pra".into()),
+        PolicyEntry::BlockName("Spammer".into()),
+        PolicyEntry::BlockName("on0bbb".into()), // a backbone node: left out
+        PolicyEntry::BlockKey(spam),
+        PolicyEntry::BlockKey(a.public()), // likewise
+    ];
+    let now = w.now();
+    w.hub.set_policy(Some(now), 1792000200, entries);
+    w.out.extend(w.hub.drain());
+    let want = vec![(1792000200, 1, 1, vec![PolicyEntry::Room("#pra".into()), PolicyEntry::BlockName("Spammer".into()), PolicyEntry::BlockKey(spam)])];
+    assert_eq!(w.policies_for(&mut a), want, "sent at once to the live session, without the self-blocks");
+
+    // A session coming up gets it right away.
+    w.connect(&mut b);
+    assert_eq!(w.policies_for(&mut b), want);
+
+    // STATUS acks: the right version, nothing more; an old one, a resend,
+    // but at most once per status_s.
+    let d = b.status(&serde_json::json!({"role": "repeater", "policy": {"version": 1792000200u32, "rooms": 1, "blocks": 2, "skipped": 0}}));
+    w.feed(b.addr, &d);
+    assert!(w.policies_for(&mut b).is_empty());
+    let d = a.status(&serde_json::json!({"policy": {"version": 0}}));
+    w.feed(a.addr, &d);
+    assert!(w.policies_for(&mut a).is_empty(), "sent less than status_s ago");
+    w.advance(60_000);
+    for s in [&mut a, &mut b] {
+        let ka = s.seal(ty::KEEPALIVE, &[]);
+        w.feed(s.addr, &ka);
+    }
+    let d = a.status(&serde_json::json!({"policy": {"version": 0}}));
+    w.feed(a.addr, &d);
+    assert_eq!(w.policies_for(&mut a), want);
+    // Without a `policy` field the node doesn't take it: no resend.
+    w.advance(60_000);
+    let d = a.status(&serde_json::json!({"role": "repeater"}));
+    w.feed(a.addr, &d);
+    assert!(w.policies_for(&mut a).is_empty());
+}
+
+#[test]
+fn blocked_senders_are_not_bridged_or_shown_and_rooms_are_decoded() {
+    let mut a = Sim::new(seed(1), "ON0AAA", 1001, BOTH);
+    let mut b = Sim::new(seed(2), "ON0BBB", 1002, BOTH);
+    let mut w = World::new(vec![a.allowed(BOTH), b.allowed(BOTH)]);
+    w.connect(&mut a);
+    w.connect(&mut b);
+    let spam = SigningKey::from_bytes(&seed(66));
+    let now = w.now();
+    w.hub.set_policy(
+        Some(now),
+        7,
+        vec![PolicyEntry::Room("#pra".into()), PolicyEntry::BlockName("Spammer".into()), PolicyEntry::BlockKey(spam.verifying_key().to_bytes())],
+    );
+    w.out.extend(w.hub.drain());
+    w.policies_for(&mut a);
+    w.policies_for(&mut b);
+    w.ops();
+
+    let pra = Channel::hashtag("pra");
+    // Group messages: the sender matches ignoring ASCII case; others pass.
+    let bad = pra.build_txt("SPAMMER", "buy now", T0);
+    let good = pra.build_txt("ON4XYZ", "hello #pra", T0);
+    let advert = build_advert(&spam, T0, node_type::CHAT, None, "Innocent");
+    for f in [&bad, &good, &advert] {
+        let d = a.bridge(f, false);
+        w.feed(a.addr, &d);
+    }
+    w.advance(1200);
+    let got: Vec<Vec<u8>> = w.frames_for(&mut b).into_iter().map(|(_, f)| f).collect();
+    assert_eq!(got, vec![good.clone()]);
+    let mut outcomes: Vec<(&str, String)> =
+        w.ops().into_iter().filter_map(|o| if let Op::Offer { outcome, detail, .. } = o { Some((outcome, detail)) } else { None }).collect();
+    outcomes.sort();
+    assert_eq!(outcomes[0].0, "blocked");
+    assert_eq!(outcomes[1].0, "blocked");
+    assert_eq!(outcomes[2], ("bridged", "to ON0BBB".to_string()));
+
+    // Observed on RF: the room is decoded, the blocked sender is not kept.
+    for f in [&bad, &good] {
+        let d = a.observe(f, -90, 0);
+        w.feed(a.addr, &d);
+    }
+    let msgs: Vec<(String, String)> = w
+        .ops()
+        .into_iter()
+        .filter_map(|o| if let Op::Message { channel, text, .. } = o { Some((channel, text)) } else { None })
+        .collect();
+    assert_eq!(msgs, vec![("#pra".to_string(), "hello #pra".to_string())]);
 }
