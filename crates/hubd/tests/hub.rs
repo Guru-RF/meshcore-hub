@@ -363,6 +363,28 @@ fn flood_bridging_hold_dedup_and_src() {
     w.advance(1500);
     assert!(w.frames_for(&mut a).is_empty() && w.frames_for(&mut c).is_empty() && w.frames_for(&mut b).is_empty());
     assert_eq!(w.hub.stats().bridged, 1);
+    // One record for the packet, from the decision after the hold.
+    let offers: Vec<(&str, String)> = w
+        .ops()
+        .into_iter()
+        .filter_map(|o| match o {
+            Op::Offer { outcome, detail, .. } => Some((outcome, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(offers, [("bridged", "to ON0BBB; already heard by ON0CCC".to_string())]);
+
+    // Heard everywhere: A offers a flood that B and C both reported.
+    let f = flood("everyone has it", &[a.public()[0]]);
+    for s in [&mut b, &mut c] {
+        let d = s.observe(&flood("everyone has it", &[]), -80, 0);
+        w.feed(s.addr, &d);
+    }
+    let d = a.bridge(&f, false);
+    w.feed(a.addr, &d);
+    w.advance(1200);
+    let outcomes: Vec<&str> = w.ops().into_iter().filter_map(|o| if let Op::Offer { outcome, .. } = o { Some(outcome) } else { None }).collect();
+    assert_eq!(outcomes, ["heard"]);
 }
 
 #[test]
@@ -384,6 +406,17 @@ fn own_replies_are_not_bridged_but_own_adverts_are() {
     assert_eq!(got.len(), 1);
     assert_eq!(got[0].1, adv);
     assert_eq!(w.hub.stats().own_skipped, 1);
+    // Both decisions are on record.
+    let mut offers: Vec<(&str, bool, u32)> = w
+        .ops()
+        .into_iter()
+        .filter_map(|o| match o {
+            Op::Offer { outcome, own, sent, src, .. } if src == a.public() => Some((outcome, own, sent)),
+            _ => None,
+        })
+        .collect();
+    offers.sort();
+    assert_eq!(offers, [("bridged", true, 1), ("own_reply", true, 0)]);
 }
 
 #[test]
@@ -454,6 +487,10 @@ fn rate_limit_per_repeater() {
     // 25/min with a burst of 8; about half a token refilled during the hold.
     assert_eq!(w.frames_for(&mut b).len(), 8);
     assert_eq!(w.hub.stats().rate_limited, 12);
+    let mut outcomes: Vec<&str> = w.ops().into_iter().filter_map(|o| if let Op::Offer { outcome, .. } = o { Some(outcome) } else { None }).collect();
+    outcomes.sort();
+    assert_eq!(outcomes.iter().filter(|o| **o == "bridged").count(), 8);
+    assert_eq!(outcomes.iter().filter(|o| **o == "rate_limited").count(), 12);
 }
 
 #[test]

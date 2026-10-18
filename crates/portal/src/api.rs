@@ -178,6 +178,11 @@ fn repeater_row(db: &Connection, mut r: Value) -> rusqlite::Result<Value> {
     if let Some(s) = r["status"].as_str() {
         r["status"] = serde_json::from_str(s).unwrap_or(Value::Null);
     }
+    // Kind: what the node reports itself; the hub's guess from the callsign
+    // until its first STATUS.
+    if let Some(role) = r["status"]["role"].as_str().filter(|k| matches!(*k, "repeater" | "hotspot")) {
+        r["kind"] = json!(role);
+    }
     // Position: the repeater's own status, else its own signed advert.
     if r["lat"].is_null()
         && let Some((lat, lon)) = db
@@ -265,9 +270,14 @@ async fn nodes(State(st): State<Shared>) -> Response {
 
 async fn links(State(st): State<Shared>) -> Response {
     query(st, |db| {
+        // A link heard before either end last moved (with a few minutes'
+        // slack for report timing) says nothing about where they are now.
         let list = rows(
             db,
-            "SELECT repeater, node, rssi, snr, last_heard, count FROM heard WHERE hops = 0 AND last_heard >= ?1",
+            "SELECT h.repeater, h.node, h.rssi, h.snr, h.last_heard, h.count FROM heard h
+             LEFT JOIN nodes n ON n.pub = h.node LEFT JOIN nodes r ON r.pub = h.repeater
+             WHERE h.hops = 0 AND h.last_heard >= ?1
+               AND h.last_heard >= COALESCE(n.moved_ts, 0) - 300 AND h.last_heard >= COALESCE(r.moved_ts, 0) - 300",
             [now() - 2 * DAY],
         )?;
         Ok(json!(list))
@@ -333,6 +343,12 @@ async fn activity(State(st): State<Shared>) -> Response {
             }
             Ok(v)
         };
+        let mut offers = Map::new();
+        for r in rows(db, "SELECT outcome, COUNT(*) AS n FROM offers WHERE ts >= ?1 GROUP BY 1", [t - DAY])? {
+            if let (Some(k), Some(n)) = (r["outcome"].as_str(), r.get("n")) {
+                offers.insert(k.to_string(), n.clone());
+            }
+        }
         Ok(json!({
             "start": start,
             "heard": bucket("SELECT ts / 3600, COUNT(*) FROM frames WHERE ts >= ?1 AND backbone = 0 GROUP BY 1")?,
@@ -346,6 +362,14 @@ async fn activity(State(st): State<Shared>) -> Response {
                  ORDER BY b.id DESC LIMIT 50",
                 [],
             )?,
+            // Offered frames the hub did not bridge, and why.
+            "recent_skipped": rows(
+                db,
+                "SELECT o.ts, o.hash, s.callsign AS src, o.route, o.ptype, o.own, o.outcome, o.detail FROM offers o
+                 LEFT JOIN repeaters s ON s.pub = o.src WHERE o.outcome != 'bridged' ORDER BY o.id DESC LIMIT 50",
+                [],
+            )?,
+            "offers_24h": offers,
             "recent_sessions": rows(
                 db,
                 "SELECT l.ts, p.callsign AS rep, l.event, l.detail FROM sessions_log l

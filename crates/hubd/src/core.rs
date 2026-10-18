@@ -18,6 +18,22 @@ use tracing::{debug, info, warn};
 use crate::store::Op;
 
 pub type Pub = [u8; 32];
+
+/// What became of a frame offered for bridging (`offers.outcome`).
+pub mod offer {
+    /// Sent to at least one repeater.
+    pub const BRIDGED: &str = "bridged";
+    /// The offering repeater's own reply, kept in its island (`own_replies`).
+    pub const OWN_REPLY: &str = "own_reply";
+    /// Every other bridge repeater had already heard it.
+    pub const HEARD: &str = "heard";
+    /// A direct frame with no backbone repeater on its path.
+    pub const NO_ROUTE: &str = "no_route";
+    /// No other bridge repeater was connected.
+    pub const NO_PEER: &str = "no_peer";
+    /// Every target was over its rate limit.
+    pub const RATE_LIMITED: &str = "rate_limited";
+}
 pub type PktHash = [u8; 8];
 
 /// Monotonic milliseconds and wall-clock Unix seconds.
@@ -61,8 +77,9 @@ pub struct Allowed {
     pub kind: Kind,
 }
 
-/// What a backbone node is. HELLO does not carry it ("Hotspots"), so the
-/// allowlist decides, from the callsign; STATUS `role` is a cross-check.
+/// What a backbone node is. HELLO does not carry it ("Hotspots"); STATUS
+/// `role` does, and the portal shows that. Before the first STATUS the
+/// allowlist guesses from the callsign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Repeater,
@@ -70,11 +87,17 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// A repeater when the callsign starts with one of `repeater_prefixes`
-    /// (club calls such as ON0…); any other call (personal or vanity) is a hotspot.
+    /// The guess from the callsign, used until a node reports its role: a
+    /// repeater has a bare call starting with one of `repeater_prefixes`
+    /// (club calls such as ON0…). A personal or vanity call, or any call with
+    /// an SSID (`OR7F-4`), is a hotspot.
     pub fn of(callsign: &str, repeater_prefixes: &[String]) -> Kind {
         let cs = callsign.to_ascii_uppercase();
-        if repeater_prefixes.iter().any(|p| cs.starts_with(&p.to_ascii_uppercase())) { Kind::Repeater } else { Kind::Hotspot }
+        if !cs.contains('-') && repeater_prefixes.iter().any(|p| cs.starts_with(&p.to_ascii_uppercase())) {
+            Kind::Repeater
+        } else {
+            Kind::Hotspot
+        }
     }
 
     /// As STATUS reports it in `role`.
@@ -713,7 +736,7 @@ impl Hub {
             self.due.push(Reverse((now.ms + self.p.hold_ms, h)));
         } else if fanned {
             // Covers repeaters that connected after the first fan-out.
-            self.fanout(now, h);
+            self.fanout(now, h, false);
         }
     }
 
@@ -732,7 +755,7 @@ impl Hub {
             && role != r.kind.name()
             && r.role_mismatch.as_deref() != Some(role)
         {
-            warn!("{callsign}: STATUS reports role {role:?}, but the callsign makes it a {} (repeater_prefixes in hub.toml)", r.kind.name());
+            warn!("{callsign}: reports itself as a {role}, its callsign suggests a {} (repeater_prefixes in hub.toml); the portal shows {role}", r.kind.name());
             r.role_mismatch = Some(role.to_string());
         }
         self.store(Op::Status { pk, ts: now.unix, json: v.clone() });
@@ -795,17 +818,27 @@ impl Hub {
         }
     }
 
-    fn fanout(&mut self, now: Now, h: PktHash) {
+    /// Send a held frame on. `first` is the decision after the hold, which
+    /// is recorded (`Op::Offer`); later calls only catch up repeaters that
+    /// connected since.
+    fn fanout(&mut self, now: Now, h: PktHash, first: bool) {
         let Some(e) = self.dedup.get_mut(&h) else { return };
         e.fanned = true;
         let Some((frame, src, own)) = e.frame.clone() else { return };
         let skip: HashSet<Pub> = e.reported.union(&e.sent).copied().collect();
         let Some(pkt) = Packet::parse(&frame) else { return };
 
+        // The other bridge repeaters online; those in `skip` already have it.
+        let peers: Vec<Pub> = self.reps.iter().filter(|(pk, r)| **pk != src && r.bridge_up()).map(|(pk, _)| *pk).collect();
+        let had: Vec<String> = peers.iter().filter(|pk| skip.contains(*pk)).map(|pk| self.callsign(pk)).collect();
         let candidates = self.reps.iter().filter(|(pk, r)| **pk != src && r.bridge_up() && !skip.contains(*pk));
+        let mut unrouted = false;
         let targets: Vec<Pub> = if pkt.is_flood() {
             if own && pkt.ptype() != ptype::ADVERT && !self.p.own_replies {
                 self.stats.own_skipped += 1;
+                if first {
+                    self.offer(now, h, src, &pkt, own, offer::OWN_REPLY, 0, String::new());
+                }
                 return;
             }
             candidates.map(|(pk, _)| *pk).collect()
@@ -826,6 +859,7 @@ impl Hub {
                 .collect();
             if t.is_empty() && !skip.iter().any(|pk| pk[..hs] == *first) {
                 self.stats.direct_unrouted += 1;
+                unrouted = true;
             }
             t
         };
@@ -834,11 +868,14 @@ impl Hub {
         src8.copy_from_slice(&src[..8]);
         let body = wire::build_frame(&src8, &frame);
         let src_call = self.callsign(&src);
+        let (mut sent, mut limited) = (Vec::new(), Vec::new());
         for t in targets {
+            let dst_call = self.callsign(&t);
             if !self.take_token(now, &t) {
                 self.stats.rate_limited += 1;
                 let msg = "bridge rate limit reached, frame not sent".to_string();
                 self.warn_rep(now, &t, &msg);
+                limited.push(dst_call);
                 continue;
             }
             if !self.send_session(&t, ty::FRAME, &body) {
@@ -848,13 +885,49 @@ impl Hub {
             if let Some(e) = self.dedup.get_mut(&h) {
                 e.sent.insert(t);
             }
-            let dst_call = self.callsign(&t);
+            sent.push(dst_call.clone());
             self.store(Op::Bridged { ts: now.unix, hash: h, src, dst: t, route: pkt.route(), ptype: pkt.ptype() });
             self.event(json!({
                 "t": "bridged", "hash": hx(&h), "from": src_call, "to": dst_call,
                 "type": ptype::name(pkt.ptype()), "route": if pkt.is_flood() { "flood" } else { "direct" }, "ts": now.unix,
             }));
         }
+        if !first {
+            return;
+        }
+        let outcome = if !sent.is_empty() {
+            offer::BRIDGED
+        } else if !limited.is_empty() {
+            offer::RATE_LIMITED
+        } else if unrouted {
+            offer::NO_ROUTE
+        } else if !had.is_empty() {
+            offer::HEARD
+        } else {
+            offer::NO_PEER
+        };
+        let mut detail = Vec::new();
+        if !sent.is_empty() {
+            detail.push(format!("to {}", sent.join(", ")));
+        }
+        if !had.is_empty() {
+            detail.push(format!("already heard by {}", had.join(", ")));
+        }
+        if !limited.is_empty() {
+            detail.push(format!("rate limit at {}", limited.join(", ")));
+        }
+        self.offer(now, h, src, &pkt, own, outcome, sent.len() as u32, detail.join("; "));
+    }
+
+    /// Record what became of a frame offered for bridging.
+    #[allow(clippy::too_many_arguments)]
+    fn offer(&mut self, now: Now, h: PktHash, src: Pub, pkt: &Packet, own: bool, outcome: &'static str, sent: u32, detail: String) {
+        self.store(Op::Offer { ts: now.unix, hash: h, src, route: pkt.route(), ptype: pkt.ptype(), own, outcome, sent, detail: detail.clone() });
+        self.event(json!({
+            "t": "offer", "hash": hx(&h), "from": self.callsign(&src), "type": ptype::name(pkt.ptype()),
+            "route": if pkt.is_flood() { "flood" } else { "direct" }, "own": own, "outcome": outcome, "sent": sent,
+            "detail": detail, "ts": now.unix,
+        }));
     }
 
     // ----------------------------------------------------------- timers --
@@ -866,7 +939,7 @@ impl Hub {
             }
             self.due.pop();
             if self.dedup.get(&h).is_some_and(|e| !e.fanned) {
-                self.fanout(now, h);
+                self.fanout(now, h, true);
             }
         }
 

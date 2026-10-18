@@ -56,6 +56,14 @@ The hub follows the "Hub rules" in `docs/backbone.md`:
 - **Limits:** frames are never modified, each hash goes to a repeater at most
   once, and each repeater gets at most 25 frames a minute (the repeater itself
   caps at 30).
+- **On record:** every offered frame is stored with what the hub did with it:
+  bridged (to whom), own reply, already heard everywhere, no route, no other
+  island, or rate-limited. The Live tab shows the skips and a 24-hour count.
+
+Repeaters show green on the map and hotspots violet, as each node reports
+itself in STATUS. Before its first report the hub guesses from the callsign
+(`repeater_prefixes` in `hub.toml`). A link a repeater heard is no longer drawn
+once the node has moved more than 1 km since.
 
 ## Privacy
 
@@ -66,8 +74,8 @@ The hub follows the "Hub rules" in `docs/backbone.md`:
   configured in `hub.toml` (by default *Public* and `#mesh`). Private messages
   are never decoded.
 - **Positions** come only from signed adverts the nodes broadcast themselves.
-- **Retention:** frame metadata is kept 14 days, messages 180 days, history 90
-  days (`[retention]` in `hub.toml`).
+- **Retention:** frame metadata and bridging decisions are kept 14 days,
+  messages 180 days, history 90 days (`[retention]` in `hub.toml`).
 
 ## Develop
 
@@ -133,7 +141,7 @@ leaves repeater sessions untouched.
 
 | Task | How |
 |---|---|
-| Add a repeater or hotspot | Add a `[[repeater]]` (callsign, `pub=` from its `repeater.key`, roles) to `deploy/hub.toml`, then run `deploy/deploy.sh`. A change to `hub.toml` alone reloads the allowlist without dropping sessions. The callsign decides the kind: `repeater_prefixes` (`ON0`) are repeaters, other calls hotspots. |
+| Add a repeater or hotspot | Add a `[[repeater]]` (callsign, `pub=` from its `repeater.key`, roles) to `deploy/hub.toml`, then run `deploy/deploy.sh`. A change to `hub.toml` alone reloads the allowlist without dropping sessions. Whether it shows as a repeater or a hotspot comes from the node itself. |
 | Remove a repeater or role | Same. The hub sends it BYE "not allowed". |
 | Hub public key | `sudo meshcore-hubd pubkey`. It is also on the portal's Join tab. |
 | Logs | `journalctl -u meshcore-hubd -u meshcore-portal -f` |

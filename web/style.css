@@ -206,6 +206,7 @@ table.heard td.n { text-align: right; }
 .feed .d b { color: var(--ink); font-weight: 600; }
 .feed li.bridged .d b { color: var(--bridge); }
 .feed li.sess .d b { color: var(--accent); }
+.feed li.skipped .d b { color: var(--warn); }
 @keyframes flash { from { background: color-mix(in srgb, var(--accent) 16%, transparent); } to { background: transparent; } }
 
 .msgs li { padding: 8px 0; border-bottom: 1px solid var(--line); }

@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::config::Retention;
@@ -56,7 +56,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     advert_ts INTEGER NOT NULL DEFAULT 0,
     first_seen INTEGER NOT NULL,
     last_seen INTEGER NOT NULL,
-    adverts INTEGER NOT NULL DEFAULT 0
+    adverts INTEGER NOT NULL DEFAULT 0,
+    moved_ts INTEGER
 );
 CREATE TABLE IF NOT EXISTS heard (
     repeater TEXT NOT NULL,
@@ -95,6 +96,17 @@ CREATE TABLE IF NOT EXISTS bridged (
     route INTEGER, ptype INTEGER
 );
 CREATE INDEX IF NOT EXISTS bridged_ts ON bridged (ts);
+CREATE TABLE IF NOT EXISTS offers (
+    id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    hash TEXT NOT NULL,
+    src TEXT NOT NULL,
+    route INTEGER, ptype INTEGER, own INTEGER,
+    outcome TEXT NOT NULL,
+    sent INTEGER NOT NULL DEFAULT 0,
+    detail TEXT
+);
+CREATE INDEX IF NOT EXISTS offers_ts ON offers (ts);
 CREATE TABLE IF NOT EXISTS sessions_log (
     id INTEGER PRIMARY KEY,
     ts INTEGER NOT NULL,
@@ -120,6 +132,18 @@ pub enum Op {
     Frame { ts: u32, repeater: Pub, hash: PktHash, route: u8, ptype: u8, hops: u8, rssi: i16, snr: f32, disposition: u8, backbone: bool, len: u8 },
     Message { hash: PktHash, channel: String, sender: Option<String>, text: String, sent_ts: u32, ts: u32, repeater: Pub, rssi: i16, snr: f32, hops: u8 },
     Bridged { ts: u32, hash: PktHash, src: Pub, dst: Pub, route: u8, ptype: u8 },
+    /// What became of a frame offered for bridging (`core::offer`).
+    Offer { ts: u32, hash: PktHash, src: Pub, route: u8, ptype: u8, own: bool, outcome: &'static str, sent: u32, detail: String },
+}
+
+/// A node whose advertised position jumps further than this has moved: the
+/// RF links heard before no longer say anything about where it is now.
+const MOVE_KM: f64 = 1.0;
+
+fn km(a: (f64, f64), b: (f64, f64)) -> f64 {
+    let (la1, lo1, la2, lo2) = (a.0.to_radians(), a.1.to_radians(), b.0.to_radians(), b.1.to_radians());
+    let h = ((la2 - la1) / 2.0).sin().powi(2) + la1.cos() * la2.cos() * ((lo2 - lo1) / 2.0).sin().powi(2);
+    2.0 * 6371.0 * h.sqrt().asin()
 }
 
 pub fn open(path: &Path) -> Result<Connection> {
@@ -150,11 +174,26 @@ pub fn open(path: &Path) -> Result<Connection> {
 /// Columns added after the first release: `CREATE TABLE IF NOT EXISTS`
 /// leaves an existing table as it was.
 fn migrate(db: &Connection) -> Result<()> {
-    let has_kind: i64 = db.query_row("SELECT COUNT(*) FROM pragma_table_info('repeaters') WHERE name = 'kind'", [], |r| r.get(0))?;
-    if has_kind == 0 {
-        db.execute("ALTER TABLE repeaters ADD COLUMN kind TEXT NOT NULL DEFAULT 'repeater'", [])?;
+    add_column(db, "repeaters", "kind", "TEXT NOT NULL DEFAULT 'repeater'")?;
+    if add_column(db, "nodes", "moved_ts", "INTEGER")? {
+        // When a node last moved is unknown for what is already stored: date
+        // positions from the latest advert, so a link heard before it is not
+        // drawn to a place the node may since have left.
+        db.execute(
+            "UPDATE nodes SET moved_ts = advert_ts WHERE lat IS NOT NULL AND advert_ts > 0 AND advert_ts <= unixepoch()",
+            [],
+        )?;
     }
     Ok(())
+}
+
+/// Add a column if the table lacks it; true when it was added.
+fn add_column(db: &Connection, table: &str, col: &str, def: &str) -> Result<bool> {
+    let n: i64 = db.query_row(&format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"), [col], |r| r.get(0))?;
+    if n == 0 {
+        db.execute(&format!("ALTER TABLE {table} ADD COLUMN {col} {def}"), [])?;
+    }
+    Ok(n == 0)
 }
 
 /// Run the writer until every sender is dropped.
@@ -317,6 +356,11 @@ fn apply(db: &Connection, op: &Op) -> Result<()> {
             )?;
         }
         Op::Node { pk, name, node_type, lat, lon, advert_ts, ts } => {
+            let old: Option<(Option<f64>, Option<f64>, u32)> = db
+                .query_row("SELECT lat, lon, advert_ts FROM nodes WHERE pub = ?1", [hx(pk)], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .optional()?;
+            let moved = matches!((old, lat, lon), (Some((Some(a), Some(b), t)), Some(c), Some(d))
+                if *advert_ts >= t && km((a, b), (*c, *d)) > MOVE_KM);
             // An older (replayed) advert never overrides a newer one.
             db.execute(
                 "INSERT INTO nodes (pub, name, type, lat, lon, advert_ts, first_seen, last_seen, adverts)
@@ -328,8 +372,9 @@ fn apply(db: &Connection, op: &Op) -> Result<()> {
                      lon = CASE WHEN excluded.advert_ts >= nodes.advert_ts THEN excluded.lon ELSE nodes.lon END,
                      advert_ts = MAX(nodes.advert_ts, excluded.advert_ts),
                      last_seen = MAX(nodes.last_seen, excluded.last_seen),
-                     adverts = nodes.adverts + 1",
-                params![hx(pk), name, node_type, lat, lon, advert_ts, ts],
+                     adverts = nodes.adverts + 1,
+                     moved_ts = CASE WHEN ?8 THEN ?7 ELSE nodes.moved_ts END",
+                params![hx(pk), name, node_type, lat, lon, advert_ts, ts, moved],
             )?;
         }
         Op::Frame { ts, repeater, hash, route, ptype, hops, rssi, snr, disposition, backbone, len } => {
@@ -356,6 +401,12 @@ fn apply(db: &Connection, op: &Op) -> Result<()> {
                 params![ts, hx(hash), hx(src), hx(dst), route, ptype],
             )?;
         }
+        Op::Offer { ts, hash, src, route, ptype, own, outcome, sent, detail } => {
+            db.execute(
+                "INSERT INTO offers (ts, hash, src, route, ptype, own, outcome, sent, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![ts, hx(hash), hx(src), route, ptype, own, outcome, sent, detail],
+            )?;
+        }
     }
     Ok(())
 }
@@ -367,6 +418,7 @@ pub fn purge(db: &Connection, r: &Retention) -> Result<()> {
     let msgs = now - r.messages_days as i64 * day;
     let hist = now - r.history_days as i64 * day;
     db.execute("DELETE FROM frames WHERE ts < ?1", [frames])?;
+    db.execute("DELETE FROM offers WHERE ts < ?1", [frames])?;
     db.execute("DELETE FROM receptions WHERE hash IN (SELECT hash FROM messages WHERE first_heard < ?1)", [msgs])?;
     db.execute("DELETE FROM messages WHERE first_heard < ?1", [msgs])?;
     db.execute("DELETE FROM status_history WHERE ts < ?1", [hist])?;
@@ -398,6 +450,7 @@ mod tests {
             Op::Frame { ts: 103, repeater: r, hash: [3; 8], route: 1, ptype: 5, hops: 1, rssi: -90, snr: 4.5, disposition: 0, backbone: false, len: 40 },
             Op::Message { hash: [3; 8], channel: "Public".into(), sender: Some("ON4XYZ".into()), text: "hi".into(), sent_ts: 99, ts: 103, repeater: r, rssi: -90, snr: 4.5, hops: 1 },
             Op::Bridged { ts: 104, hash: [3; 8], src: r, dst: n, route: 1, ptype: 5 },
+            Op::Offer { ts: 104, hash: [3; 8], src: r, route: 1, ptype: 5, own: false, outcome: "bridged", sent: 1, detail: "to ON0BBB".into() },
             Op::Down { pk: r, ts: 105, reason: "timeout".into() },
         ];
         apply_batch(&mut db, &ops).unwrap();
@@ -412,7 +465,27 @@ mod tests {
         assert_eq!((name.as_str(), nlat, adverts), ("ON4XYZ", 50.9, 2));
         let n: i64 = db.query_row("SELECT COUNT(*) FROM sessions_log", [], |x| x.get(0)).unwrap();
         assert_eq!(n, 2);
+        let n: i64 = db.query_row("SELECT COUNT(*) FROM offers WHERE outcome = 'bridged'", [], |x| x.get(0)).unwrap();
+        assert_eq!(n, 1);
         purge(&db, &Retention::default()).unwrap();
+    }
+
+    #[test]
+    fn a_node_moving_more_than_a_km_is_marked() {
+        let mut db = Connection::open_in_memory().unwrap();
+        db.execute_batch(SCHEMA).unwrap();
+        let n = [2u8; 32];
+        let node = |lat: f64, lon: f64, advert_ts: u32, ts: u32| Op::Node { pk: n, name: Some("OR7F-12".into()), node_type: 1, lat: Some(lat), lon: Some(lon), advert_ts, ts };
+        let moved = |db: &Connection| -> Option<i64> { db.query_row("SELECT moved_ts FROM nodes", [], |x| x.get(0)).unwrap() };
+        apply_batch(&mut db, &[node(50.9593, 4.2310, 100, 1000)]).unwrap();
+        assert_eq!(moved(&db), None, "a first position is not a move");
+        apply_batch(&mut db, &[node(50.9620, 4.2330, 200, 2000)]).unwrap();
+        assert_eq!(moved(&db), None, "300 m is not a move");
+        apply_batch(&mut db, &[node(51.1458, 2.7917, 300, 3000)]).unwrap();
+        assert_eq!(moved(&db), Some(3000), "Merchtem to Lombardsijde");
+        apply_batch(&mut db, &[node(50.9593, 4.2310, 250, 4000)]).unwrap();
+        assert_eq!(moved(&db), Some(3000), "an older advert moves nothing");
+        assert!((km((50.9593, 4.2310), (51.1458, 2.7917)) - 103.0).abs() < 2.0);
     }
 
     #[test]
@@ -424,11 +497,18 @@ mod tests {
         {
             let db = Connection::open(&path).unwrap();
             db.execute_batch("CREATE TABLE repeaters (pub TEXT PRIMARY KEY, callsign TEXT NOT NULL, roles_allowed INTEGER NOT NULL DEFAULT 0, allowlisted INTEGER NOT NULL DEFAULT 1, online INTEGER NOT NULL DEFAULT 0);
-                 INSERT INTO repeaters (pub, callsign) VALUES ('01', 'ON0RFG');").unwrap();
+                 INSERT INTO repeaters (pub, callsign) VALUES ('01', 'ON0RFG');
+                 CREATE TABLE nodes (pub TEXT PRIMARY KEY, name TEXT, type INTEGER NOT NULL DEFAULT 0, lat REAL, lon REAL,
+                     advert_ts INTEGER NOT NULL DEFAULT 0, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, adverts INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO nodes (pub, name, lat, lon, advert_ts, first_seen, last_seen) VALUES ('02', 'OR7F-12', 51.1458, 2.7917, 1792000000, 1, 2);
+                 INSERT INTO nodes (pub, name, advert_ts, first_seen, last_seen) VALUES ('03', 'no position', 0, 1, 2);").unwrap();
         }
         let mut db = open(&path).unwrap();
         let kind: String = db.query_row("SELECT kind FROM repeaters", [], |x| x.get(0)).unwrap();
         assert_eq!(kind, "repeater");
+        let moved: Vec<Option<i64>> =
+            db.prepare("SELECT moved_ts FROM nodes ORDER BY pub").unwrap().query_map([], |x| x.get(0)).unwrap().map(Result::unwrap).collect();
+        assert_eq!(moved, [Some(1792000000), None], "positions dated from the latest advert");
         apply_batch(&mut db, &[Op::Allowlist(vec![([1; 32], "OR7F-4".into(), 3, Kind::Hotspot)])]).unwrap();
         let kind: String = db.query_row("SELECT kind FROM repeaters WHERE callsign = 'OR7F-4'", [], |x| x.get(0)).unwrap();
         assert_eq!(kind, "hotspot");

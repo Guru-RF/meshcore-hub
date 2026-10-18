@@ -27,8 +27,8 @@ pub struct Config {
     /// Unix socket the portal reads live events from.
     #[serde(default = "d_sock")]
     pub events_socket: PathBuf,
-    /// Allowlisted callsigns starting with one of these are repeaters; any
-    /// other callsign (a personal or vanity call) is a hotspot.
+    /// The kind guessed before a node's first STATUS (`Kind::of`): a bare
+    /// callsign starting with one of these is a repeater, anything else a hotspot.
     #[serde(default = "d_prefixes")]
     pub repeater_prefixes: Vec<String>,
     #[serde(default)]
@@ -287,6 +287,7 @@ mod tests {
                 ("ON4ABC".to_string(), Kind::Hotspot),
             ]
         );
+        assert_eq!(Kind::of("ON0RFG-1", &["ON0".into()]), Kind::Hotspot, "only a hotspot carries an SSID");
         assert_eq!(Kind::of("PI1XYZ", &["ON0".into(), "PI".into()]), Kind::Repeater);
         assert_eq!(Kind::of("ON0RFG", &[]), Kind::Hotspot);
     }

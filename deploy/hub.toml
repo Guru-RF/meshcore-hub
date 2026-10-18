@@ -9,10 +9,11 @@ hub_key = "/etc/meshcore-hub/hub.key"
 database = "/var/lib/meshcore-hub/hub.db"
 events_socket = "/run/meshcore-hub/events.sock"
 
-# Allowlisted callsigns starting with one of these are repeaters (club calls,
-# green on the map); any other call, personal or vanity, is a hotspot (violet).
-# HELLO doesn't say which (docs/backbone.md, "Hotspots"); the hub warns when a
-# node's STATUS "role" disagrees.
+# Repeaters are green on the map, hotspots violet. Each node reports which it
+# is in STATUS "role" (docs/backbone.md, "Hotspots"), and the map shows that.
+# Until its first STATUS the hub guesses from the callsign: a bare call
+# starting with one of these is a repeater; a personal or vanity call, or any
+# call with an SSID (OR7F-4), is a hotspot. The hub logs a disagreement.
 repeater_prefixes = ["ON0"]
 
 # Intervals handed to repeaters in WELCOME (docs/backbone.md, "Timers").

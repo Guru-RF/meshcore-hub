@@ -9,6 +9,14 @@ const TYPE = { 1: "companion", 2: "repeater", 3: "room", 4: "sensor" };
 const ROUTE = { 0: "flood", 1: "flood", 2: "direct", 3: "direct" };
 const PTYPE = ["REQ", "RESPONSE", "TXT_MSG", "ACK", "ADVERT", "GRP_TXT", "GRP_DATA", "ANON_REQ", "PATH", "TRACE", "MULTIPART", "CONTROL", "", "", "", "RAW_CUSTOM"];
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+// Why the hub did not bridge an offered frame (offers.outcome).
+const SKIP = {
+  own_reply: "own reply, stays in its island",
+  heard: "every other island already heard it",
+  no_route: "no backbone node on its path",
+  no_peer: "no other island connected",
+  rate_limited: "rate limit reached",
+};
 
 const state = {
   overview: null,
@@ -17,6 +25,7 @@ const state = {
   links: [],
   messages: new Map(),  // hash -> message
   detail: null,         // pub of the open repeater
+  offers: null,         // outcome -> count, 24 h
 };
 
 // ------------------------------------------------------------- helpers --
@@ -318,6 +327,21 @@ function feed(cls, t, who, html) {
   while (feedEl.children.length > 200) feedEl.lastChild.remove();
 }
 
+function skipped(o) {
+  feed("skipped", o.ts, o.from || "?", `<b>not bridged</b> · ${esc(o.type || "?")} ${esc(o.route || "")} · ${esc(SKIP[o.outcome] || o.outcome)}${o.detail ? ` (${esc(o.detail)})` : ""}`);
+}
+
+function renderOffers(counts) {
+  const el = $("#offers");
+  const n = Object.values(counts || {}).reduce((a, b) => a + b, 0);
+  if (!n) { el.textContent = "Nothing offered for bridging in the last 24 h."; return; }
+  const parts = [`${counts.bridged || 0} bridged`];
+  for (const [k, label] of Object.entries({ own_reply: "own replies", heard: "already heard everywhere", no_route: "no route", no_peer: "no other island", rate_limited: "rate-limited" })) {
+    if (counts[k]) parts.push(`${counts[k]} ${label}`);
+  }
+  el.textContent = `Offered for bridging, 24 h: ${n} · ${parts.join(" · ")}`;
+}
+
 function renderMessages() {
   const el = $("#messages");
   const list = [...state.messages.values()].sort((a, b) => b.first_heard - a.first_heard).slice(0, 300);
@@ -350,8 +374,11 @@ async function loadActivity() {
   const a = await api("/api/activity");
   spark("#spark-heard", a.heard);
   spark("#spark-bridged", a.bridged);
+  state.offers = a.offers_24h || {};
+  renderOffers(state.offers);
   if (!feedEl.children.length) {
     const items = [
+      ...(a.recent_skipped || []).map((o) => ({ ts: o.ts, f: () => skipped({ ...o, from: o.src, type: PTYPE[o.ptype], route: ROUTE[o.route] }) })),
       ...a.recent_bridged.map((b) => ({ ts: b.ts, f: () => feed("bridged", b.ts, b.src || "?", `<b>bridged</b> to ${esc(b.dst || "?")} · ${PTYPE[b.ptype] || "?"} ${ROUTE[b.route]}`) })),
       ...a.recent_sessions.map((s) => ({ ts: s.ts, f: () => feed("sess", s.ts, s.rep || "?", `<b>${esc(s.event)}</b> ${esc(s.detail || "")}`) })),
     ].sort((x, y) => x.ts - y.ts);
@@ -401,6 +428,10 @@ function onEvent(ev) {
       renderRepeaters(); renderStats(); drawMap(); refresh();
       break;
     }
+    case "offer":
+      if (state.offers) { state.offers[ev.outcome] = (state.offers[ev.outcome] || 0) + 1; renderOffers(state.offers); }
+      if (ev.outcome !== "bridged") skipped(ev);
+      break;
     case "bridged":
       flashBridge(ev.from, ev.to);
       feed("bridged", ev.ts, ev.from, `<b>bridged</b> to ${esc(ev.to)} · ${esc(ev.type)} ${esc(ev.route)}`);
