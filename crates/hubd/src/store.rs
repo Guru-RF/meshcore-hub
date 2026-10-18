@@ -1,9 +1,11 @@
-//! SQLite store. The hub is the only writer: ops queue on a channel and a
-//! dedicated thread applies them in batched transactions, so the UDP loop
-//! never waits on the disk. The portal opens the same file read-only (WAL).
+//! SQLite store. The hub's writes queue on a channel and a dedicated thread
+//! applies them in batched transactions, so the UDP loop never waits on the
+//! disk. The portal reads the same file (WAL) and writes only the room
+//! admins' `rooms` and `blocks`.
 //!
-//! Nothing private is stored: frames are kept as metadata only (type, route,
-//! hops, signal), and text only for public channels the hub holds keys for.
+//! Frames are kept as metadata only (type, route, hops, signal), and text for
+//! the channels the hub holds keys for. On a ham network every key is
+//! published: nothing on the air is secret.
 
 use std::path::Path;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};

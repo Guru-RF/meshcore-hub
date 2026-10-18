@@ -104,10 +104,11 @@ POLICY in `docs/backbone.md`.
 - **No IP addresses** are stored or published.
 - **Frames** are kept as metadata only: type, route, hops, RSSI/SNR, and what
   the repeater did with them.
-- **Message text** is decoded only for channels whose keys are published:
-  the ones in `hub.toml` and the admins' rooms. Private messages are never
-  decoded. The public map shows only the default Public channel's messages
-  (page, API and live feed); room admins see every decoded channel.
+- **Message text:** this is amateur radio, so nothing on the air is secret:
+  every channel key is published and the network carries no private messages.
+  The hub decodes the channels in `hub.toml` and the admins' rooms. The public
+  map shows only the default Public channel's messages (page, API and live
+  feed); room admins see every channel.
 - **Positions** come only from signed adverts the nodes broadcast themselves.
 - **Retention:** frame metadata and bridging decisions are kept 14 days,
   messages 180 days, history 90 days (`[retention]` in `hub.toml`).

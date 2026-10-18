@@ -1,8 +1,8 @@
-//! JSON API over the hub's SQLite file. Every handler opens the file
-//! read-only on a blocking thread; the hub is the only writer.
+//! The public JSON API over the hub's SQLite file. Every handler opens the
+//! file read-only on a blocking thread.
 //!
-//! Nothing here exposes addresses or private traffic: the store holds frame
-//! metadata only, and text only for public channels.
+//! Nothing here exposes addresses: the store holds frame metadata only, and
+//! the public pages show message text from the Public channel only.
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
