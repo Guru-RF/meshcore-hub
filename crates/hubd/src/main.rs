@@ -160,10 +160,15 @@ async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sende
                 Err(e) => warn!("udp recv: {e}"),
             },
             _ = tick.tick() => hub.tick(clock.now()),
-            _ = hup.recv() => match Config::load(config_path).and_then(|c| Ok((c.allowlist()?, c.map_meta()))) {
-                Ok((allow, meta)) => {
-                    info!("SIGHUP: reloaded allowlist, {} repeater(s)", allow.len());
+            _ = hup.recv() => match Config::load(config_path).and_then(|c| Ok((c.allowlist()?, c.decode_channels()?, c.map_meta()))) {
+                Ok((allow, channels, meta)) => {
+                    info!(
+                        "SIGHUP: reloaded allowlist, {} repeater(s); decoding {}",
+                        allow.len(),
+                        channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>().join(", ")
+                    );
                     hub.set_allowlist(Some(clock.now()), allow);
+                    hub.set_channels(channels);
                     let _ = store_tx.send(Op::Meta(meta));
                 }
                 Err(e) => error!("SIGHUP: keeping the old allowlist: {e:#}"),

@@ -264,6 +264,11 @@ impl Hub {
         self.hub_pub
     }
 
+    /// Replace the channels whose text the hub decodes for the portal.
+    pub fn set_channels(&mut self, channels: Vec<Channel>) {
+        self.channels = channels;
+    }
+
     pub fn stats(&self) -> &Stats {
         &self.stats
     }

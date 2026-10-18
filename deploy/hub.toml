@@ -1,8 +1,9 @@
 # meshcore-hubd configuration for be.mesh73.net.
 # This file is the source of truth: edit it here and run deploy/deploy.sh.
 # deploy.sh installs it as /etc/meshcore-hub/hub.toml. If only this file
-# changed, the hub reloads (SIGHUP): the allowlist applies without dropping
-# sessions. Other settings here need a restart: RESTART=1 deploy/deploy.sh
+# changed, the hub reloads (SIGHUP): the allowlist, [map] and the channels
+# apply without dropping sessions. Other settings here need a restart:
+# RESTART=1 deploy/deploy.sh
 
 listen = "0.0.0.0:4405"
 hub_key = "/etc/meshcore-hub/hub.key"
@@ -54,11 +55,24 @@ callsign = "OR7F-4"             # hotspot, coast
 pub = "3cc11df930c56540e54ab7ee4f30bcbf52ae8c4bad195c280681e8c392ac1e9a"
 roles = ["observe", "bridge"]
 
-# Public channels the portal decodes and shows. Only keys that are genuinely
-# published belong here.
+# Channels the portal decodes and shows: the ones the backbone nodes carry.
+# Only keys that are genuinely published belong here; a hashtag channel's key
+# is sha256("#name")[:16], so anyone who knows the name can read it.
 [[channel]]
 name = "Public"
 psk = "izOH6cXN6mrJ5e26oRXNcg=="
 
 [[channel]]
 hashtag = "mesh"
+
+[[channel]]
+hashtag = "ora"
+
+[[channel]]
+hashtag = "pra"
+
+[[channel]]
+hashtag = "sysops"
+
+[[channel]]
+hashtag = "mbox"
