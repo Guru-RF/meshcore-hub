@@ -29,10 +29,17 @@ history_days = 90
 
 # The allowlist. pub = the `pub=` line of the repeater's repeater.key.
 # roles: "observe" (feeds the map) and/or "bridge" (carries traffic between islands).
+# Hotspots connect the same way; the hub has no special rules for them
+# (docs/backbone.md, "Hotspots"), so the kind is only noted here.
 
 [[repeater]]
-callsign = "ON0RFG"
+callsign = "ON0RFG"             # repeater, Merchtem
 pub = "9ebd58ba0191164815aecbcf39537b8108c0b4a737e82357311b2bb3282cb940"
+roles = ["observe", "bridge"]
+
+[[repeater]]
+callsign = "OR7F-4"             # hotspot, coast
+pub = "3cc11df930c56540e54ab7ee4f30bcbf52ae8c4bad195c280681e8c392ac1e9a"
 roles = ["observe", "bridge"]
 
 # Public channels the portal decodes and shows. Only keys that are genuinely
