@@ -14,13 +14,14 @@ use rusqlite::{Connection, params};
 use serde_json::Value;
 
 use crate::config::Retention;
-use crate::core::{PktHash, Pub};
+use crate::core::{Kind, PktHash, Pub};
 
 pub const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS repeaters (
     pub TEXT PRIMARY KEY,
     callsign TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'repeater',
     roles_allowed INTEGER NOT NULL DEFAULT 0,
     allowlisted INTEGER NOT NULL DEFAULT 1,
     online INTEGER NOT NULL DEFAULT 0,
@@ -107,9 +108,9 @@ CREATE INDEX IF NOT EXISTS sessions_log_ts ON sessions_log (ts);
 #[derive(Debug, Clone, PartialEq)]
 pub enum Op {
     Meta(Vec<(String, String)>),
-    /// The full allowlist: (pub, callsign, roles). Repeaters not in it are
-    /// marked as no longer allowlisted.
-    Allowlist(Vec<(Pub, String, u8)>),
+    /// The full allowlist: (pub, callsign, roles, kind). Repeaters not in it
+    /// are marked as no longer allowlisted.
+    Allowlist(Vec<(Pub, String, u8, Kind)>),
     Up { pk: Pub, ts: u32, roles: u8, name: String },
     Down { pk: Pub, ts: u32, reason: String },
     Seen { pk: Pub, ts: u32 },
@@ -132,6 +133,7 @@ pub fn open(path: &Path) -> Result<Connection> {
     db.pragma_update(None, "synchronous", "NORMAL")?;
     db.busy_timeout(Duration::from_secs(5))?;
     db.execute_batch(SCHEMA)?;
+    migrate(&db)?;
     // SQLite creates files 0644 & ~umask; the portal (group) also needs to
     // write the WAL index, so make them group-writable.
     for suffix in ["", "-wal", "-shm"] {
@@ -143,6 +145,16 @@ pub fn open(path: &Path) -> Result<Connection> {
     // Nobody is connected right after a (re)start.
     db.execute("UPDATE repeaters SET online = 0 WHERE online != 0", [])?;
     Ok(db)
+}
+
+/// Columns added after the first release: `CREATE TABLE IF NOT EXISTS`
+/// leaves an existing table as it was.
+fn migrate(db: &Connection) -> Result<()> {
+    let has_kind: i64 = db.query_row("SELECT COUNT(*) FROM pragma_table_info('repeaters') WHERE name = 'kind'", [], |r| r.get(0))?;
+    if has_kind == 0 {
+        db.execute("ALTER TABLE repeaters ADD COLUMN kind TEXT NOT NULL DEFAULT 'repeater'", [])?;
+    }
+    Ok(())
 }
 
 /// Run the writer until every sender is dropped.
@@ -216,12 +228,12 @@ fn apply(db: &Connection, op: &Op) -> Result<()> {
         }
         Op::Allowlist(list) => {
             db.execute("UPDATE repeaters SET allowlisted = 0", [])?;
-            for (pk, callsign, roles) in list {
+            for (pk, callsign, roles, kind) in list {
                 db.execute(
-                    "INSERT INTO repeaters (pub, callsign, roles_allowed, allowlisted) VALUES (?1, ?2, ?3, 1)
-                     ON CONFLICT (pub) DO UPDATE SET callsign = excluded.callsign,
+                    "INSERT INTO repeaters (pub, callsign, kind, roles_allowed, allowlisted) VALUES (?1, ?2, ?3, ?4, 1)
+                     ON CONFLICT (pub) DO UPDATE SET callsign = excluded.callsign, kind = excluded.kind,
                          roles_allowed = excluded.roles_allowed, allowlisted = 1",
-                    params![hx(pk), callsign, roles],
+                    params![hx(pk), callsign, kind.name(), roles],
                 )?;
             }
         }
@@ -376,7 +388,7 @@ mod tests {
         let (r, n) = ([1u8; 32], [2u8; 32]);
         let ops = vec![
             Op::Meta(vec![("hub_pub".into(), "ab".into())]),
-            Op::Allowlist(vec![(r, "ON0RFG".into(), 3)]),
+            Op::Allowlist(vec![(r, "ON0RFG".into(), 3, Kind::Repeater)]),
             Op::Up { pk: r, ts: 100, roles: 3, name: "ON0RFG".into() },
             Op::Seen { pk: r, ts: 101 },
             Op::Status { pk: r, ts: 102, json: serde_json::json!({"name": "ON0RFG", "uptime": 5, "lat": 51.0, "lon": 4.2, "rx": {"total": 9}, "airtime_ms": {"tx": 100}}) },
@@ -401,5 +413,27 @@ mod tests {
         let n: i64 = db.query_row("SELECT COUNT(*) FROM sessions_log", [], |x| x.get(0)).unwrap();
         assert_eq!(n, 2);
         purge(&db, &Retention::default()).unwrap();
+    }
+
+    #[test]
+    fn migrates_a_database_without_kind() {
+        let dir = std::env::temp_dir().join(format!("hubd-migrate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hub.db");
+        let _ = std::fs::remove_file(&path);
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch("CREATE TABLE repeaters (pub TEXT PRIMARY KEY, callsign TEXT NOT NULL, roles_allowed INTEGER NOT NULL DEFAULT 0, allowlisted INTEGER NOT NULL DEFAULT 1, online INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO repeaters (pub, callsign) VALUES ('01', 'ON0RFG');").unwrap();
+        }
+        let mut db = open(&path).unwrap();
+        let kind: String = db.query_row("SELECT kind FROM repeaters", [], |x| x.get(0)).unwrap();
+        assert_eq!(kind, "repeater");
+        apply_batch(&mut db, &[Op::Allowlist(vec![([1; 32], "OR7F-4".into(), 3, Kind::Hotspot)])]).unwrap();
+        let kind: String = db.query_row("SELECT kind FROM repeaters WHERE callsign = 'OR7F-4'", [], |x| x.get(0)).unwrap();
+        assert_eq!(kind, "hotspot");
+        open(&path).unwrap(); // a second open leaves it alone
+        drop(db);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

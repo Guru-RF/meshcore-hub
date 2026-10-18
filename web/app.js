@@ -43,6 +43,9 @@ const clock = (ts) => new Date(ts * 1000).toLocaleTimeString([], { hour: "2-digi
 const fmt = (n, d = 0) => (n == null || Number.isNaN(n) ? "–" : Number(n).toFixed(d));
 const snrClass = (snr) => (snr >= 5 ? "snr-good" : snr >= -5 ? "snr-mid" : "snr-bad");
 const snrColor = (snr) => css(snr >= 5 ? "--on" : snr >= -5 ? "--warn" : "--bad");
+// Backbone nodes: repeaters (club calls) green, hotspots (personal calls) violet.
+const isHotspot = (r) => r.kind === "hotspot";
+const kindColor = (r) => css(isHotspot(r) ? "--hs" : "--on");
 
 async function api(path) {
   const r = await fetch(path, { cache: "no-store" });
@@ -130,8 +133,10 @@ function drawMap() {
   for (const r of state.repeaters.values()) {
     if (r.lat == null) continue;
     pts.push([r.lat, r.lon]);
-    const col = r.online ? css("--on") : css("--off");
-    const m = L.circleMarker([r.lat, r.lon], { radius: 9, weight: 3, color: css("--panel"), fillColor: col, fillOpacity: 1 })
+    // Offline: grey, with a ring in the kind's colour.
+    const m = L.circleMarker([r.lat, r.lon], {
+      radius: 9, weight: 3, color: r.online ? css("--panel") : kindColor(r), fillColor: r.online ? kindColor(r) : css("--off"), fillOpacity: 1,
+    })
       .bindTooltip(esc(r.callsign), { permanent: true, direction: "right", offset: [10, 0], className: "cs" })
       .on("click", () => openDetail(r.pub))
       .addTo(repLayer);
@@ -192,9 +197,9 @@ function renderStats() {
 
 function renderRepeaters() {
   const el = $("#repeaters");
-  const list = [...state.repeaters.values()].sort((a, b) => (b.online - a.online) || a.callsign.localeCompare(b.callsign));
+  const list = [...state.repeaters.values()].sort((a, b) => (b.online - a.online) || (isHotspot(a) - isHotspot(b)) || a.callsign.localeCompare(b.callsign));
   if (!list.length) {
-    el.innerHTML = `<p class="empty">No repeaters on the backbone yet.</p>`;
+    el.innerHTML = `<p class="empty">Nothing on the backbone yet.</p>`;
     return;
   }
   el.innerHTML = list.map((r) => {
@@ -202,7 +207,8 @@ function renderRepeaters() {
     const rt = r.rates_1h || {};
     const roles = r.online ? [r.roles & 1 && "observe", r.roles & 2 && "bridge"].filter(Boolean) : [];
     return `<button class="card" data-pub="${esc(r.pub)}">
-      <div class="row"><i class="state ${r.online ? "on" : ""}"></i><span class="cs">${esc(r.callsign)}</span>
+      <div class="row"><i class="state ${r.online ? "on" : ""} ${isHotspot(r) ? "hs" : ""}"></i><span class="cs">${esc(r.callsign)}</span>
+        ${isHotspot(r) ? `<span class="badge hs">hotspot</span>` : ""}
         ${roles.map((x) => `<span class="badge">${x}</span>`).join("")}
         ${r.online ? "" : `<span class="badge off">offline</span>`}
         <span class="when">${r.online ? `up ${dur(now() - r.session_since)}` : `seen ${ago(r.last_seen)}`}</span></div>
@@ -225,7 +231,7 @@ async function openDetail(pub) {
   box.hidden = false;
   box.innerHTML = `<p class="empty">Loading…</p>`;
   let r;
-  try { r = await api(`/api/repeater/${pub}`); } catch { box.innerHTML = `<p class="empty">Could not load this repeater.</p>`; return; }
+  try { r = await api(`/api/repeater/${pub}`); } catch { box.innerHTML = `<p class="empty">Could not load this node.</p>`; return; }
   if (state.detail !== pub) return;
   try { history.replaceState(null, "", `#r/${encodeURIComponent(r.callsign)}`); } catch {}
 
@@ -240,8 +246,9 @@ async function openDetail(pub) {
   const st = r.status || {};
   const radio = st.radio || {};
   box.innerHTML = `
-    <button class="back" type="button">← All repeaters</button>
-    <div class="row" style="display:flex;align-items:center;gap:8px"><i class="state ${r.online ? "on" : ""}"></i><h2>${esc(r.callsign)}</h2>
+    <button class="back" type="button">← Backbone</button>
+    <div class="row" style="display:flex;align-items:center;gap:8px"><i class="state ${r.online ? "on" : ""} ${isHotspot(r) ? "hs" : ""}"></i><h2>${esc(r.callsign)}</h2>
+      <span class="badge ${isHotspot(r) ? "hs" : ""}">${isHotspot(r) ? "hotspot" : "repeater"}</span>
       <span class="badge ${r.online ? "" : "off"}">${r.online ? "online" : "offline"}</span></div>
     <p class="mono">${esc(r.pub)}</p>
     <div class="kv">

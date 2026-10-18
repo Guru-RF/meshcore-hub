@@ -58,6 +58,32 @@ impl Default for Params {
 pub struct Allowed {
     pub callsign: String,
     pub roles: u8,
+    pub kind: Kind,
+}
+
+/// What a backbone node is. HELLO does not carry it ("Hotspots"), so the
+/// allowlist decides, from the callsign; STATUS `role` is a cross-check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Repeater,
+    Hotspot,
+}
+
+impl Kind {
+    /// A repeater when the callsign starts with one of `repeater_prefixes`
+    /// (club calls such as ON0…); any other call (personal or vanity) is a hotspot.
+    pub fn of(callsign: &str, repeater_prefixes: &[String]) -> Kind {
+        let cs = callsign.to_ascii_uppercase();
+        if repeater_prefixes.iter().any(|p| cs.starts_with(&p.to_ascii_uppercase())) { Kind::Repeater } else { Kind::Hotspot }
+    }
+
+    /// As STATUS reports it in `role`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Kind::Repeater => "repeater",
+            Kind::Hotspot => "hotspot",
+        }
+    }
 }
 
 /// An effect for the I/O shell.
@@ -109,6 +135,9 @@ struct Session {
 struct Rep {
     callsign: String,
     roles_allowed: u8,
+    kind: Kind,
+    /// The last STATUS `role` that disagreed with `kind`, so it is logged once.
+    role_mismatch: Option<String>,
     /// Node name from the last accepted HELLO.
     name: String,
     last_hello_ts: u32,
@@ -125,6 +154,8 @@ impl Rep {
         Rep {
             callsign: a.callsign.clone(),
             roles_allowed: a.roles,
+            kind: a.kind,
+            role_mismatch: None,
             name: String::new(),
             last_hello_ts: 0,
             cur: None,
@@ -275,6 +306,10 @@ impl Hub {
             let r = self.reps.entry(*pk).or_insert_with(|| Rep::new(a));
             r.callsign = a.callsign.clone();
             r.roles_allowed = a.roles;
+            if r.kind != a.kind {
+                r.kind = a.kind;
+                r.role_mismatch = None;
+            }
         }
 
         // "Hub rules" 8: shared first public-key bytes are worth knowing about.
@@ -288,7 +323,7 @@ impl Hub {
             }
         }
 
-        let mut list: Vec<(Pub, String, u8)> = new.iter().map(|(pk, a)| (*pk, a.callsign.clone(), a.roles)).collect();
+        let mut list: Vec<(Pub, String, u8, Kind)> = new.iter().map(|(pk, a)| (*pk, a.callsign.clone(), a.roles, a.kind)).collect();
         list.sort_by(|a, b| a.1.cmp(&b.1));
         self.store(Op::Allowlist(list));
     }
@@ -692,6 +727,14 @@ impl Hub {
             return;
         }
         let callsign = self.callsign(&pk);
+        let role = v.get("role").and_then(Value::as_str).filter(|s| s.len() <= 32);
+        if let (Some(role), Some(r)) = (role, self.reps.get_mut(&pk))
+            && role != r.kind.name()
+            && r.role_mismatch.as_deref() != Some(role)
+        {
+            warn!("{callsign}: STATUS reports role {role:?}, but the callsign makes it a {} (repeater_prefixes in hub.toml)", r.kind.name());
+            r.role_mismatch = Some(role.to_string());
+        }
         self.store(Op::Status { pk, ts: now.unix, json: v.clone() });
         self.event(json!({"t": "status", "rep": callsign, "pub": hx(&pk), "s": v, "ts": now.unix}));
     }

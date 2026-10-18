@@ -9,6 +9,12 @@ hub_key = "/etc/meshcore-hub/hub.key"
 database = "/var/lib/meshcore-hub/hub.db"
 events_socket = "/run/meshcore-hub/events.sock"
 
+# Allowlisted callsigns starting with one of these are repeaters (club calls,
+# green on the map); any other call, personal or vanity, is a hotspot (violet).
+# HELLO doesn't say which (docs/backbone.md, "Hotspots"); the hub warns when a
+# node's STATUS "role" disagrees.
+repeater_prefixes = ["ON0"]
+
 # Intervals handed to repeaters in WELCOME (docs/backbone.md, "Timers").
 [timing]
 keepalive_s = 25
@@ -29,8 +35,7 @@ history_days = 90
 
 # The allowlist. pub = the `pub=` line of the repeater's repeater.key.
 # roles: "observe" (feeds the map) and/or "bridge" (carries traffic between islands).
-# Hotspots connect the same way; the hub has no special rules for them
-# (docs/backbone.md, "Hotspots"), so the kind is only noted here.
+# Hotspots connect the same way; the hub bridges for them by the same rules.
 
 [[repeater]]
 callsign = "ON0RFG"             # repeater, Merchtem

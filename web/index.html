@@ -19,7 +19,7 @@
     </div>
   </div>
   <div class="stats" id="stats">
-    <div class="stat"><b id="st-rep">–</b><span>repeaters online</span></div>
+    <div class="stat"><b id="st-rep">–</b><span>on the backbone</span></div>
     <div class="stat"><b id="st-nodes">–</b><span>nodes, 24 h</span></div>
     <div class="stat"><b id="st-msgs">–</b><span>public messages, 24 h</span></div>
     <div class="stat"><b id="st-bridged">–</b><span>bridged, 24 h</span></div>
@@ -29,10 +29,11 @@
 
 <main class="layout">
   <section class="mapwrap">
-    <div id="map" aria-label="Map of repeaters, nodes and RF links"></div>
+    <div id="map" aria-label="Map of backbone repeaters and hotspots, nodes and RF links"></div>
     <div class="legend">
-      <span><i class="dot bb on"></i>backbone, online</span>
-      <span><i class="dot bb"></i>backbone, offline</span>
+      <span><i class="dot bb on"></i>backbone repeater</span>
+      <span><i class="dot bb hs"></i>backbone hotspot</span>
+      <span><i class="dot bb"></i>offline</span>
       <span><i class="dot t2"></i>repeater</span>
       <span><i class="dot t1"></i>companion</span>
       <span><i class="dot t3"></i>room</span>
@@ -43,7 +44,7 @@
 
   <aside class="side">
     <nav class="tabs" role="tablist">
-      <button role="tab" data-tab="repeaters" aria-selected="true">Repeaters</button>
+      <button role="tab" data-tab="repeaters" aria-selected="true">Backbone</button>
       <button role="tab" data-tab="feed">Live</button>
       <button role="tab" data-tab="messages">Messages</button>
       <button role="tab" data-tab="join">Join</button>
@@ -69,11 +70,11 @@
     </div>
 
     <div class="panel" id="tab-join" hidden>
-      <h3>Connect a repeater to the backbone</h3>
+      <h3>Connect a repeater or hotspot to the backbone</h3>
       <p>The backbone joins RF islands over the internet and feeds this map. A repeater opens a UDP session to the hub, so it works behind NAT and on 4G. When the hub is unreachable the repeater carries on exactly as before.</p>
       <ol class="steps">
         <li>Run <a href="https://github.com/Guru-RF/meshcore-repeater">meshcore-repeater</a> with the backbone support.</li>
-        <li>Send the hub operator your callsign and your repeater's public key: the <code>pub=</code> line of <code>repeater.key</code>.</li>
+        <li>Send the hub operator your callsign and your node's public key: the <code>pub=</code> line of <code>repeater.key</code>. Club calls (ON0…) show as repeaters, personal and vanity calls as hotspots.</li>
         <li>Once it is on the allowlist, add this to <code>meshcore-repeater.conf</code> and restart:</li>
       </ol>
       <pre id="join-conf" class="conf"></pre>

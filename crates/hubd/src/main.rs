@@ -77,7 +77,7 @@ fn cli() -> Result<()> {
             let cfg = Config::load(&config)?;
             println!("config ok: {}", config.display());
             for (pk, a) in cfg.allowlist()? {
-                println!("  {:<10} {}  {}", a.callsign, hex::encode(pk), hubd::core::role_names(a.roles).join("+"));
+                println!("  {:<10} {:<8} {}  {}", a.callsign, a.kind.name(), hex::encode(pk), hubd::core::role_names(a.roles).join("+"));
             }
             for c in cfg.decode_channels()? {
                 println!("  channel {} (hash {:02x})", c.name, c.hash);

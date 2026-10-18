@@ -10,7 +10,7 @@ use meshcore_proto::meshcore::Channel;
 use meshcore_proto::wire::{ROLE_BRIDGE, ROLE_OBSERVE};
 use serde::Deserialize;
 
-use crate::core::{Allowed, Params, Pub};
+use crate::core::{Allowed, Kind, Params, Pub};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,6 +27,10 @@ pub struct Config {
     /// Unix socket the portal reads live events from.
     #[serde(default = "d_sock")]
     pub events_socket: PathBuf,
+    /// Allowlisted callsigns starting with one of these are repeaters; any
+    /// other callsign (a personal or vanity call) is a hotspot.
+    #[serde(default = "d_prefixes")]
+    pub repeater_prefixes: Vec<String>,
     #[serde(default)]
     pub timing: Timing,
     #[serde(default)]
@@ -124,6 +128,9 @@ fn d_db() -> PathBuf {
 fn d_sock() -> PathBuf {
     "/run/meshcore-hub/events.sock".into()
 }
+fn d_prefixes() -> Vec<String> {
+    vec!["ON0".into()]
+}
 fn d_roles() -> Vec<String> {
     vec!["observe".into()]
 }
@@ -168,7 +175,8 @@ impl Config {
                     other => bail!("repeater {}: unknown role {other:?} (observe, bridge)", r.callsign),
                 };
             }
-            out.push((pk, Allowed { callsign: r.callsign.clone(), roles }));
+            let kind = Kind::of(&r.callsign, &self.repeater_prefixes);
+            out.push((pk, Allowed { callsign: r.callsign.clone(), roles, kind }));
         }
         Ok(out)
     }
@@ -244,4 +252,42 @@ pub fn write_key(path: &Path, key: &SigningKey) -> Result<()> {
         .with_context(|| format!("creating {} (refusing to overwrite an existing key)", path.display()))?;
     f.write_all(text.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kind_from_callsign() {
+        let cfg: Config = toml::from_str(
+            r#"
+            [[repeater]]
+            callsign = "ON0RFG"
+            pub = "9ebd58ba0191164815aecbcf39537b8108c0b4a737e82357311b2bb3282cb940"
+            [[repeater]]
+            callsign = "OR7F-4"
+            pub = "3cc11df930c56540e54ab7ee4f30bcbf52ae8c4bad195c280681e8c392ac1e9a"
+            [[repeater]]
+            callsign = "on0abc"
+            pub = "0000000000000000000000000000000000000000000000000000000000000001"
+            [[repeater]]
+            callsign = "ON4ABC"
+            pub = "0000000000000000000000000000000000000000000000000000000000000002"
+            "#,
+        )
+        .unwrap();
+        let kinds: Vec<_> = cfg.allowlist().unwrap().into_iter().map(|(_, a)| (a.callsign, a.kind)).collect();
+        assert_eq!(
+            kinds,
+            [
+                ("ON0RFG".to_string(), Kind::Repeater),
+                ("OR7F-4".to_string(), Kind::Hotspot),
+                ("on0abc".to_string(), Kind::Repeater),
+                ("ON4ABC".to_string(), Kind::Hotspot),
+            ]
+        );
+        assert_eq!(Kind::of("PI1XYZ", &["ON0".into(), "PI".into()]), Kind::Repeater);
+        assert_eq!(Kind::of("ON0RFG", &[]), Kind::Hotspot);
+    }
 }

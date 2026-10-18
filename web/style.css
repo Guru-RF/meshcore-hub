@@ -7,6 +7,7 @@
   --accent: #1f7a4d;
   --accent-ink: #ffffff;
   --on: #1f9d55;
+  --hs: #7048e8;
   --off: #9aa39e;
   --warn: #c77700;
   --bad: #c0392b;
@@ -30,6 +31,7 @@
     --accent: #3fbf7f;
     --accent-ink: #0c1410;
     --on: #3fcf80;
+    --hs: #9f86ff;
     --off: #5f6a64;
     --shadow: none;
     color-scheme: dark;
@@ -45,6 +47,7 @@
   --accent: #3fbf7f;
   --accent-ink: #0c1410;
   --on: #3fcf80;
+  --hs: #9f86ff;
   --off: #5f6a64;
   --shadow: none;
   color-scheme: dark;
@@ -128,6 +131,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; }
 .dot.bb { width: 12px; height: 12px; background: var(--off); border: 2px solid var(--panel); outline: 1px solid var(--off); }
 .dot.bb.on { background: var(--on); outline-color: var(--on); }
+.dot.bb.hs { background: var(--hs); outline-color: var(--hs); }
 .dot.t1 { background: var(--t1); } .dot.t2 { background: var(--t2); }
 .dot.t3 { background: var(--t3); } .dot.t4 { background: var(--t4); }
 .legend .line { display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: linear-gradient(90deg, var(--bad), var(--warn), var(--on)); }
@@ -161,8 +165,10 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .card .when { margin-left: auto; color: var(--muted); font-size: 12px; }
 .badge { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .badge.off { background: color-mix(in srgb, var(--off) 20%, transparent); color: var(--muted); }
+.badge.hs { background: color-mix(in srgb, var(--hs) 16%, transparent); color: var(--hs); }
 .state { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
 .state.on { background: var(--on); }
+.state.on.hs { background: var(--hs); }
 .kv { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 10px; }
 .kv div { display: flex; flex-direction: column; }
 .kv b { font-variant-numeric: tabular-nums; font-size: 13px; }

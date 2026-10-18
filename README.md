@@ -9,8 +9,9 @@ running at **[be.mesh73.net](https://be.mesh73.net)**.
   repeaters, but only where they are needed. If the hub is unreachable, every
   repeater carries on exactly as it would without it.
 - **Portal (`meshcore-portal`)**: a live map and monitor. It shows backbone
-  repeaters, the nodes they hear, RF links coloured by SNR, duty cycle,
-  traffic, public-channel messages, and how to join.
+  repeaters (green) and hotspots (violet), the nodes they hear, RF links
+  coloured by SNR, duty cycle, traffic, public-channel messages, and how to
+  join.
 
 The wire protocol is specified in meshcore-repeater
 [`docs/backbone.md`](https://github.com/Guru-RF/meshcore-repeater/blob/main/docs/backbone.md).
@@ -132,7 +133,7 @@ leaves repeater sessions untouched.
 
 | Task | How |
 |---|---|
-| Add a repeater | Add a `[[repeater]]` (callsign, `pub=` from its `repeater.key`, roles) to `deploy/hub.toml`, then run `deploy/deploy.sh`. A change to `hub.toml` alone reloads the allowlist without dropping sessions. |
+| Add a repeater or hotspot | Add a `[[repeater]]` (callsign, `pub=` from its `repeater.key`, roles) to `deploy/hub.toml`, then run `deploy/deploy.sh`. A change to `hub.toml` alone reloads the allowlist without dropping sessions. The callsign decides the kind: `repeater_prefixes` (`ON0`) are repeaters, other calls hotspots. |
 | Remove a repeater or role | Same. The hub sends it BYE "not allowed". |
 | Hub public key | `sudo meshcore-hubd pubkey`. It is also on the portal's Join tab. |
 | Logs | `journalctl -u meshcore-hubd -u meshcore-portal -f` |

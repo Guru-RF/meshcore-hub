@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 
 use ed25519_dalek::SigningKey;
-use hubd::core::{Allowed, Hub, Now, Out, Params, Pub};
+use hubd::core::{Allowed, Hub, Kind, Now, Out, Params, Pub};
 use hubd::store::Op;
 use meshcore_proto::meshcore::{Channel, Packet, build_advert, node_type};
 use meshcore_proto::wire::{self, ROLE_BRIDGE, ROLE_OBSERVE, Replay, ty};
@@ -75,7 +75,7 @@ impl Sim {
     }
 
     fn allowed(&self, roles: u8) -> (Pub, Allowed) {
-        (self.public(), Allowed { callsign: self.name.clone(), roles })
+        (self.public(), Allowed { callsign: self.name.clone(), roles, kind: Kind::Repeater })
     }
 
     fn make_hello(&mut self, now: Now) -> Vec<u8> {

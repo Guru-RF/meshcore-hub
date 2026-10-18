@@ -198,7 +198,7 @@ fn repeater_row(db: &Connection, mut r: Value) -> rusqlite::Result<Value> {
     Ok(r)
 }
 
-const REPEATER_COLS: &str = "pub, callsign, roles_allowed, online, roles, session_since, last_seen, last_down, \
+const REPEATER_COLS: &str = "pub, callsign, kind, roles_allowed, online, roles, session_since, last_seen, last_down, \
      down_reason, sessions, name, fw, lat, lon, uptime, status_ts, status";
 
 async fn repeaters(State(st): State<Shared>) -> Response {
