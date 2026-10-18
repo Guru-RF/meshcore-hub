@@ -60,6 +60,10 @@ The hub follows the "Hub rules" in `docs/backbone.md`:
   bridged (to whom), own reply, already heard everywhere, no route, no other
   island, or rate-limited. The Live tab shows the skips and a 24-hour count.
 
+The map places the hub itself (`[map]` in `hub.toml`, IP-HUB in St. Ghislain)
+with a dashed IP line to every connected node; a bridged frame flashes along
+them, through the hub.
+
 Repeaters show green on the map and hotspots violet, as each node reports
 itself in STATUS. Before its first report the hub guesses from the callsign
 (`repeater_prefixes` in `hub.toml`). A link a repeater heard is no longer drawn

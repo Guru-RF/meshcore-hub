@@ -37,6 +37,8 @@ pub struct Config {
     pub bridge: Bridge,
     #[serde(default)]
     pub retention: Retention,
+    #[serde(default)]
+    pub map: MapCfg,
     #[serde(default, rename = "repeater")]
     pub repeaters: Vec<RepeaterCfg>,
     #[serde(default, rename = "channel")]
@@ -95,6 +97,23 @@ impl Default for Retention {
     }
 }
 
+/// How the portal draws the hub itself.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct MapCfg {
+    /// The hub marker's label.
+    pub hub_name: String,
+    /// Where the hub runs, as `[lat, lon]`. Without it the map has no hub
+    /// marker and no IP lines.
+    pub hub_position: Option<[f64; 2]>,
+}
+
+impl Default for MapCfg {
+    fn default() -> Self {
+        MapCfg { hub_name: "IP-HUB".into(), hub_position: None }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RepeaterCfg {
@@ -141,7 +160,19 @@ impl Config {
         let cfg: Config = toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
         cfg.allowlist()?;
         cfg.decode_channels()?;
+        if let Some([lat, lon]) = cfg.map.hub_position
+            && !((-90.0..=90.0).contains(&lat) && (-180.0..=180.0).contains(&lon))
+        {
+            bail!("[map] hub_position must be [lat, lon]");
+        }
         Ok(cfg)
+    }
+
+    /// `[map]` for the portal, through the `meta` table. Empty values clear
+    /// a position that was removed.
+    pub fn map_meta(&self) -> Vec<(String, String)> {
+        let (lat, lon) = self.map.hub_position.map(|[a, b]| (a.to_string(), b.to_string())).unwrap_or_default();
+        vec![("hub_name".into(), self.map.hub_name.clone()), ("hub_lat".into(), lat), ("hub_lon".into(), lon)]
     }
 
     pub fn params(&self) -> Params {

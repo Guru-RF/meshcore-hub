@@ -34,6 +34,12 @@ frames_days = 14
 messages_days = 180
 history_days = 90
 
+# The hub on the map, with a dashed IP line to every connected node. Reloads
+# with the allowlist.
+[map]
+hub_name = "IP-HUB"
+hub_position = [50.4697, 3.8653]   # Google Cloud europe-west1, St. Ghislain
+
 # The allowlist. pub = the `pub=` line of the repeater's repeater.key.
 # roles: "observe" (feeds the map) and/or "bridge" (carries traffic between islands).
 # Hotspots connect the same way; the hub bridges for them by the same rules.

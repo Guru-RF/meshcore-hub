@@ -80,6 +80,7 @@ L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
 }).addTo(map);
 const linkLayer = L.layerGroup().addTo(map);
 const nodeLayer = L.layerGroup().addTo(map);
+const ipLayer = L.layerGroup().addTo(map);
 const repLayer = L.layerGroup().addTo(map);
 const flashLayer = L.layerGroup().addTo(map);
 const repMarkers = new Map();
@@ -103,6 +104,14 @@ new ResizeObserver(() => {
   if (!userMoved) fit();
 }).observe(document.getElementById("map"));
 
+// The hub itself ([map] in hub.toml): where it runs, if configured.
+function hubPos() {
+  const h = state.overview?.hub || {};
+  const lat = parseFloat(h.hub_lat), lon = parseFloat(h.hub_lon);
+  return Number.isFinite(lat) && Number.isFinite(lon) ? [lat, lon] : null;
+}
+const hubName = () => state.overview?.hub?.hub_name || "IP-HUB";
+
 function posOf(pub) {
   const r = state.repeaters.get(pub);
   if (r && r.lat != null) return [r.lat, r.lon];
@@ -114,6 +123,7 @@ function posOf(pub) {
 function drawMap() {
   linkLayer.clearLayers();
   nodeLayer.clearLayers();
+  ipLayer.clearLayers();
   repLayer.clearLayers();
   repMarkers.clear();
 
@@ -139,9 +149,24 @@ function drawMap() {
   }
 
   const pts = [];
+  const hub = hubPos();
+  if (hub) {
+    pts.push(hub);
+    const online = [...state.repeaters.values()].filter((r) => r.online).length;
+    L.marker(hub, { icon: L.divIcon({ className: "hubmark", html: "IP", iconSize: [24, 24] }), keyboard: false })
+      .bindTooltip(esc(hubName()), { permanent: true, direction: "right", offset: [12, 0], className: "cs" })
+      .bindPopup(`<b>${esc(hubName())}</b><br>IP backbone hub · ${online} connected<br>UDP ${esc(String(state.overview?.hub?.backbone_listen || "").split(":").pop())} · ${esc(location.hostname)}`)
+      .addTo(ipLayer);
+  }
   for (const r of state.repeaters.values()) {
     if (r.lat == null) continue;
     pts.push([r.lat, r.lon]);
+    // Its session to the hub, as a dashed IP line.
+    if (hub && r.online) {
+      L.polyline([[r.lat, r.lon], hub], { color: css("--ip"), weight: 2, dashArray: "5 7", opacity: 0.85, interactive: true })
+        .bindTooltip(`${esc(r.callsign)} ↔ ${esc(hubName())} over IP · up ${dur(now() - r.session_since)}`, { sticky: true })
+        .addTo(ipLayer);
+    }
     // Offline: grey, with a ring in the kind's colour.
     const m = L.circleMarker([r.lat, r.lon], {
       radius: 9, weight: 3, color: r.online ? css("--panel") : kindColor(r), fillColor: r.online ? kindColor(r) : css("--off"), fillOpacity: 1,
@@ -179,7 +204,9 @@ function flashBridge(from, to) {
   const a = repByCall(from), b = repByCall(to);
   const pa = a && posOf(a.pub), pb = b && posOf(b.pub);
   if (!pa || !pb) return;
-  const line = L.polyline([pa, pb], { color: css("--bridge"), weight: 3, dashArray: "6 8", opacity: 0.95 }).addTo(flashLayer);
+  // Bridged frames travel through the hub.
+  const hub = hubPos();
+  const line = L.polyline(hub ? [pa, hub, pb] : [pa, pb], { color: css("--bridge"), weight: 3, dashArray: "6 8", opacity: 0.95 }).addTo(flashLayer);
   setTimeout(() => flashLayer.removeLayer(line), 2500);
 }
 

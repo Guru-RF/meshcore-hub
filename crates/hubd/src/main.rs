@@ -120,12 +120,14 @@ fn run(config: &Path) -> Result<()> {
     let rng: hubd::core::Rng = Box::new(|b: &mut [u8]| getrandom::fill(b).expect("OS random source"));
     let mut hub = Hub::new(key, cfg.params(), allow, channels, rng);
     let started = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
-    store_tx.send(Op::Meta(vec![
+    let mut meta = vec![
         ("hub_pub".into(), hub_pub.clone()),
         ("hub_started".into(), started.to_string()),
         ("hub_version".into(), env!("CARGO_PKG_VERSION").into()),
         ("backbone_listen".into(), cfg.listen.clone()),
-    ]))?;
+    ];
+    meta.extend(cfg.map_meta());
+    store_tx.send(Op::Meta(meta))?;
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
     let result = rt.block_on(serve(&cfg, config, &mut hub, &store_tx));
@@ -158,10 +160,11 @@ async fn serve(cfg: &Config, config_path: &Path, hub: &mut Hub, store_tx: &Sende
                 Err(e) => warn!("udp recv: {e}"),
             },
             _ = tick.tick() => hub.tick(clock.now()),
-            _ = hup.recv() => match Config::load(config_path).and_then(|c| c.allowlist()) {
-                Ok(allow) => {
+            _ = hup.recv() => match Config::load(config_path).and_then(|c| Ok((c.allowlist()?, c.map_meta()))) {
+                Ok((allow, meta)) => {
                     info!("SIGHUP: reloaded allowlist, {} repeater(s)", allow.len());
                     hub.set_allowlist(Some(clock.now()), allow);
+                    let _ = store_tx.send(Op::Meta(meta));
                 }
                 Err(e) => error!("SIGHUP: keeping the old allowlist: {e:#}"),
             },

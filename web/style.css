@@ -16,6 +16,7 @@
   --t3: #8a4fd0;
   --t4: #13958f;
   --bridge: #e0457b;
+  --ip: #3d4a55;
   --shadow: 0 1px 2px rgb(0 0 0 / 6%), 0 4px 16px rgb(0 0 0 / 5%);
   --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
   color-scheme: light;
@@ -32,6 +33,7 @@
     --accent-ink: #0c1410;
     --on: #3fcf80;
     --hs: #9f86ff;
+    --ip: #b4c0ca;
     --off: #5f6a64;
     --shadow: none;
     color-scheme: dark;
@@ -48,6 +50,7 @@
   --accent-ink: #0c1410;
   --on: #3fcf80;
   --hs: #9f86ff;
+  --ip: #b4c0ca;
   --off: #5f6a64;
   --shadow: none;
   color-scheme: dark;
@@ -120,6 +123,11 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
   font-weight: 600; font-size: 11.5px; padding: 1px 6px; box-shadow: var(--shadow);
 }
 .leaflet-tooltip.cs::before { display: none; }
+.hubmark {
+  display: grid; place-items: center; border-radius: 6px;
+  background: var(--ip); color: var(--panel); border: 2px solid var(--panel);
+  font: 700 10px/1 system-ui, sans-serif; letter-spacing: .02em; box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+}
 
 .legend {
   position: absolute; left: 10px; bottom: 22px; z-index: 500;
@@ -135,6 +143,8 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .dot.t1 { background: var(--t1); } .dot.t2 { background: var(--t2); }
 .dot.t3 { background: var(--t3); } .dot.t4 { background: var(--t4); }
 .legend .line { display: inline-block; width: 18px; height: 3px; border-radius: 2px; background: linear-gradient(90deg, var(--bad), var(--warn), var(--on)); }
+.legend .line.ip { height: 0; border-radius: 0; background: none; border-top: 2px dashed var(--ip); }
+.legend .hub { display: inline-block; width: 12px; height: 12px; border-radius: 3px; background: var(--ip); }
 
 .side {
   border-left: 1px solid var(--line);
