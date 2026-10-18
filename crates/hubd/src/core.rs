@@ -35,6 +35,8 @@ pub mod offer {
     pub const RATE_LIMITED: &str = "rate_limited";
     /// From a blocked sender, name or key ("Rooms and blocks").
     pub const BLOCKED: &str = "blocked";
+    /// The only islands that could take it were hotspots keeping RF silent.
+    pub const RF_SILENT: &str = "rf_silent";
 }
 pub type PktHash = [u8; 8];
 
@@ -174,6 +176,9 @@ struct Rep {
     last_warn_ms: u64,
     /// When the last POLICY set went to this node.
     policy_sent_ms: u64,
+    /// A hotspot keeping RF silent (STATUS `rf_silent`): it would drop FRAMEs,
+    /// so none are sent to it.
+    rf_silent: bool,
 }
 
 impl Rep {
@@ -190,6 +195,7 @@ impl Rep {
             flood_paths: HashMap::new(),
             last_warn_ms: 0,
             policy_sent_ms: 0,
+            rf_silent: false,
         }
     }
 
@@ -926,6 +932,13 @@ impl Hub {
         if resend {
             self.send_policy(now, &pk);
         }
+        let silent = v.get("rf_silent").and_then(Value::as_bool).unwrap_or(false);
+        if let Some(r) = self.reps.get_mut(&pk)
+            && r.rf_silent != silent
+        {
+            r.rf_silent = silent;
+            info!("{callsign}: {}", if silent { "RF silent, no FRAMEs until it wakes" } else { "transmitting on RF again" });
+        }
         self.store(Op::Status { pk, ts: now.unix, json: v.clone() });
         self.event(json!({"t": "status", "rep": callsign, "pub": hx(&pk), "s": v, "ts": now.unix}));
     }
@@ -1041,6 +1054,9 @@ impl Hub {
         let mut src8 = [0u8; 8];
         src8.copy_from_slice(&src[..8]);
         let body = wire::build_frame(&src8, &frame);
+        // A hotspot keeping RF silent would only drop it.
+        let (silent, targets): (Vec<Pub>, Vec<Pub>) = targets.into_iter().partition(|pk| self.reps.get(pk).is_some_and(|r| r.rf_silent));
+        let silent: Vec<String> = silent.iter().map(|pk| self.callsign(pk)).collect();
         let src_call = self.callsign(&src);
         let (mut sent, mut limited) = (Vec::new(), Vec::new());
         for t in targets {
@@ -1077,6 +1093,8 @@ impl Hub {
             offer::NO_ROUTE
         } else if !had.is_empty() {
             offer::HEARD
+        } else if !silent.is_empty() {
+            offer::RF_SILENT
         } else {
             offer::NO_PEER
         };
@@ -1089,6 +1107,9 @@ impl Hub {
         }
         if !limited.is_empty() {
             detail.push(format!("rate limit at {}", limited.join(", ")));
+        }
+        if !silent.is_empty() {
+            detail.push(format!("RF silent: {}", silent.join(", ")));
         }
         self.offer(now, h, src, &pkt, own, outcome, sent.len() as u32, detail.join("; "));
     }

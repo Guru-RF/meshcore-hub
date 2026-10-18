@@ -67,6 +67,10 @@ The map places the hub itself (`[map]` in `hub.toml`, IP-HUB in St. Ghislain)
 with a dashed IP line to every connected node; a bridged frame flashes along
 them, through the hub.
 
+A hotspot keeps quiet on RF until it hears a companion close by
+(STATUS `rf_silent`). Meanwhile it stays connected over IP: the map marks it
+"RF silent", and the hub sends it no frames (offer outcome `rf_silent`).
+
 Repeaters show green on the map and hotspots violet, as each node reports
 itself in STATUS. Before its first report the hub guesses from the callsign
 (`repeater_prefixes` in `hub.toml`). A link a repeater heard is no longer drawn

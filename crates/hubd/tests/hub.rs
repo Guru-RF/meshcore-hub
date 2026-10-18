@@ -720,3 +720,33 @@ fn blocked_senders_are_not_bridged_or_shown_and_rooms_are_decoded() {
         .collect();
     assert_eq!(msgs, vec![("#pra".to_string(), "hello #pra".to_string())]);
 }
+
+#[test]
+fn no_frames_to_a_hotspot_keeping_rf_silent() {
+    let mut a = Sim::new(seed(1), "ON0AAA", 1001, BOTH);
+    let mut h = Sim::new(seed(2), "OR7F-4", 1002, BOTH);
+    let mut w = World::new(vec![a.allowed(BOTH), h.allowed(BOTH)]);
+    w.connect(&mut a);
+    w.connect(&mut h);
+    let offers = |w: &mut World| -> Vec<(&'static str, String)> {
+        w.ops().into_iter().filter_map(|o| if let Op::Offer { outcome, detail, .. } = o { Some((outcome, detail)) } else { None }).collect()
+    };
+    offers(&mut w);
+
+    let d = h.status(&serde_json::json!({"role": "hotspot", "rf_silent": true}));
+    w.feed(h.addr, &d);
+    let d = a.bridge(&flood("while silent", &[a.public()[0]]), false);
+    w.feed(a.addr, &d);
+    w.advance(1200);
+    assert!(w.frames_for(&mut h).is_empty(), "nothing to a silent hotspot");
+    assert_eq!(offers(&mut w), [("rf_silent", "RF silent: OR7F-4".to_string())]);
+
+    // Awake again (STATUS without the flag counts as awake).
+    let d = h.status(&serde_json::json!({"role": "hotspot"}));
+    w.feed(h.addr, &d);
+    let d = a.bridge(&flood("awake", &[a.public()[0]]), false);
+    w.feed(a.addr, &d);
+    w.advance(1200);
+    assert_eq!(w.frames_for(&mut h).len(), 1);
+    assert_eq!(offers(&mut w), [("bridged", "to OR7F-4".to_string())]);
+}

@@ -107,6 +107,8 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
   min-height: 0;
 }
 
+/* Grid items may shrink below their content: long lines scroll in their own box. */
+.layout > * { min-width: 0; }
 .mapwrap { position: relative; min-height: 0; }
 #map { position: absolute; inset: 0; background: var(--bg); }
 
@@ -123,6 +125,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
   font-weight: 600; font-size: 11.5px; padding: 1px 6px; box-shadow: var(--shadow);
 }
 .leaflet-tooltip.cs::before { display: none; }
+.leaflet-tooltip.cs .quiet { font-weight: 500; color: var(--muted); }
 .hubmark {
   display: grid; place-items: center; border-radius: 6px;
   background: var(--ip); color: var(--panel); border: 2px solid var(--panel);
@@ -173,7 +176,7 @@ h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: v
 .card .row { display: flex; align-items: center; gap: 8px; }
 .card .cs { font-weight: 700; font-size: 15px; }
 .card .when { margin-left: auto; color: var(--muted); font-size: 12px; }
-.badge { font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
+.badge { white-space: nowrap; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 99px; background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--accent); }
 .badge.off { background: color-mix(in srgb, var(--off) 20%, transparent); color: var(--muted); }
 .badge.hs { background: color-mix(in srgb, var(--hs) 16%, transparent); color: var(--hs); }
 .state { width: 9px; height: 9px; border-radius: 50%; background: var(--off); flex: none; }
@@ -246,8 +249,15 @@ table.radio td:first-child { color: var(--muted); width: 45%; }
 .channels { display: grid; grid-template-columns: repeat(auto-fill, minmax(168px, 1fr)); gap: 10px; margin: 8px 0 6px; }
 .chan { border: 1px solid var(--line); border-radius: 10px; padding: 10px; display: grid; gap: 5px; justify-items: center; text-align: center; min-width: 0; }
 .chan b { font-size: 14px; }
-.chan .qr { background: #fff; padding: 6px; border-radius: 6px; line-height: 0; }
-.chan .qr svg { width: 140px; height: 140px; }
+.chan .qrbox summary { cursor: pointer; color: var(--accent); font-size: 12.5px; font-weight: 600; list-style: none; }
+.chan .qrbox summary::-webkit-details-marker { display: none; }
+.chan .qrbox[open] summary { margin-bottom: 8px; }
+.chan .qrbox[open] summary::after { content: " ▴"; }
+.chan .qrbox:not([open]) summary::after { content: " ▾"; }
+/* Open: the card takes the whole row and the code is big, for a phone camera. */
+.chan:has(.qrbox[open]) { grid-column: 1 / -1; }
+.chan .qr { background: #fff; padding: 12px; border-radius: 8px; line-height: 0; }
+.chan .qr svg { width: min(260px, 70vw); height: auto; aspect-ratio: 1; }
 .chan code { font-size: 10.5px; word-break: break-all; color: var(--muted); }
 .chan .note { margin: 0; font-size: 11.5px; }
 
